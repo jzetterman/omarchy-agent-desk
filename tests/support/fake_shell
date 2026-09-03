@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stands in for $SHELL in runner tests. Answers the E.6 PATH probe with a
+# sentinel-wrapped PATH whose first entry is tests/support/fake_cli/, and empty
+# home variables. Prints a banner first so the parser must ignore it.
+set -u
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FAKE_CLI="$HERE/fake_cli"
+if [[ "${1:-}" == "-lic" ]]; then
+  printf 'fastfetch banner\n'
+  export PATH="$FAKE_CLI:/usr/bin:/bin"
+  unset CLAUDE_CONFIG_DIR CODEX_HOME GROK_HOME
+  eval "$2"
+  exit 0
+fi
+exec /bin/bash "$@"

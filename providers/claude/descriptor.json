@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "claude",
+  "name": "Claude Code",
+  "mark": "mark.svg",
+  "markLight": "mark-light.svg",
+  "glyph": "󱚣",
+  "binary": "claude",
+  "homeEnv": "CLAUDE_CONFIG_DIR",
+  "defaultHome": "~/.claude",
+  "commands": {
+    "login": ["claude", "auth", "login"],
+    "logout": ["claude", "auth", "logout"],
+    "launch": ["claude"]
+  },
+  "credential": {
+    "file": ".credentials.json",
+    "currentEntry": "claudeAiOauth",
+    "lockFile": null,
+    "tempFiles": {
+      "refresh": ".credentials.json.agent-desk-refresh",
+      "transaction": ".credentials.json.agent-desk-txn"
+    }
+  },
+  "sharedEntries": [
+    "CLAUDE.md",
+    "settings.json",
+    "settings.local.json",
+    "agents",
+    "rules",
+    "skills",
+    "plugins",
+    "hooks",
+    "output-styles",
+    "themes",
+    "history.jsonl",
+    "projects"
+  ],
+  "accountState": [
+    {
+      "name": ".claude.json",
+      "defaultPath": "~/.claude.json",
+      "stripKeys": [
+        "oauthAccount",
+        "userID",
+        "modelAccessCache",
+        "orgModelDefaultCache",
+        "overageCreditGrantCache",
+        "passesEligibilityCache",
+        "s1mAccessCache",
+        "cachedExtraUsageDisabledReason",
+        "penguinModeOrgEnabled",
+        "additionalModelCostsCache",
+        "additionalModelOptionsCache",
+        "groveConfigCache",
+        "cachedGrowthBookFeatures",
+        "cachedGrowthBookFeaturesAt",
+        "cachedExperimentData",
+        "cachedExperimentFeatures",
+        "metricsStatusCache",
+        "passesLastSeenRemaining",
+        "bridgeOauthDeadExpiresAt",
+        "bridgeOauthDeadFailCount"
+      ]
+    }
+  ],
+  "scale": "sniff",
+  "installDirs": ["~/.local/share/mise/shims", "~/.local/bin"],
+  "urls": {
+    "usage": "https://api.anthropic.com/api/oauth/usage",
+    "identity": null,
+    "refresh": "https://platform.claude.com/v1/oauth/token",
+    "refreshFormat": "json",
+    "clientId": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    "clientIdKey": null
+  },
+  "installHint": "Install Claude Code: `mise use -g claude@latest`"
+}

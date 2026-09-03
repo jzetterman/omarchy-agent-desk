@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jzetterman.agent-desk",
+  "name": "Agent Desk",
+  "version": "0.1.0",
+  "author": "John Zetterman",
+  "license": "MIT",
+  "description": "Rate-limit headroom and account switching for Claude Code, Codex, and Grok in the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Agent Desk",
+    "description": "One bar icon and one panel: usage rails and the active account for every saved CLI login.",
+    "category": "AI",
+    "defaultSection": "right"
+  }
+}
