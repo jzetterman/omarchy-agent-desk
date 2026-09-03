@@ -83,6 +83,9 @@ Panel {
         if (typeof readoutFlag !== "boolean") readoutFlag = true
         var scope = setting("readoutScope", "active")
         if (scope !== "active" && scope !== "all") scope = "active"
+        // Unknown ids are dropped and unlisted ids appended by the runner
+        // (it owns the descriptor list); reading snapshot providers here would
+        // re-send settings on every snapshot.
         var order = setting("providerOrder", ["claude", "codex", "grok"])
         if (!Array.isArray(order)) order = ["claude", "codex", "grok"]
         var cleaned = []
@@ -197,13 +200,12 @@ Panel {
     }
 
     // Flat visual index of a card, matching Keys.cards, from the keyed models.
-    // Sections without accounts hold no row (R26: only cards are focusable).
+    // Sections without cards hold no row (R26: only cards are focusable).
     function visualIndex(providerId, accountId) {
         var idx = 0
         for (var i = 0; i < providerIds.length; i++) {
             var pid = providerIds[i]
-            var p = providerById(pid)
-            if (!p || p.enabled === false) continue
+            if (!Keys.showsCards(providerById(pid))) continue
             var aids = accountIdsByProvider[pid] || []
             for (var j = 0; j < aids.length; j++) {
                 if (pid === providerId && aids[j] === accountId) return idx
@@ -282,9 +284,9 @@ Panel {
 
     Connections {
         target: desk
-        function onCaptionTextChanged() {
-            if (desk.captionText) {
-                root.latchedCaption = desk.captionText
+        function onCaption(text) {
+            if (text) {
+                root.latchedCaption = text
                 root.captionLatched = true
             }
         }
@@ -606,7 +608,7 @@ Panel {
 
                             Repeater {
                                 id: cardRepeater
-                                model: (section.provider && section.provider.installed === false) ? [] : (root.accountIdsByProvider[section.modelData] || [])
+                                model: Keys.showsCards(section.provider) ? (root.accountIdsByProvider[section.modelData] || []) : []
                                 AccountCard {
                                     required property var modelData
                                     required property int index

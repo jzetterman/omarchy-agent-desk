@@ -53,6 +53,26 @@ Item {
             compare(Format.countdown(threeHoursTwelve, now), "3h 12m")
         }
 
+        // R17 fixes "20 min ago"; above an hour the age uses countdown's units.
+        function test_ago_units() {
+            var now = Date.parse("2023-11-14T13:46:40Z")
+            compare(Format.ago(new Date(now - 20 * 60 * 1000).toISOString(), now), "20 min ago")
+            compare(Format.ago(new Date(now - 65 * 60 * 1000).toISOString(), now), "1h 5m ago")
+            compare(Format.ago(new Date(now - (2 * 86400 + 3 * 3600) * 1000).toISOString(), now), "2d 3h ago")
+            compare(Format.ago(new Date(now + 1000).toISOString(), now), "just now")
+        }
+
+        // Exact reset shows only the clock within 24 h; beyond it, weekday and date too.
+        function test_exact_reset_adds_date_beyond_24h() {
+            var now = Date.parse("2023-11-14T13:46:40Z")
+            var soon = new Date(now + 3 * 3600 * 1000)
+            var later = new Date(now + (2 * 86400 + 3600) * 1000)
+            compare(Format.exactReset(soon.toISOString(), now), soon.toLocaleTimeString(Qt.locale(), "h:mm AP t"))
+            var text = Format.exactReset(later.toISOString(), now)
+            verify(text.indexOf(later.toLocaleString(Qt.locale(), "ddd")) === 0, text)
+            verify(text.indexOf(later.toLocaleTimeString(Qt.locale(), "h:mm AP t")) > 0, text)
+        }
+
         function test_plain_width_matches_plaintext_twin() {
             verify(guardedAuto.implicitWidth === guardedPlain.implicitWidth)
             verify(unguarded.implicitWidth !== guardedPlain.implicitWidth)

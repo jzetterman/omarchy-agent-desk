@@ -18,9 +18,15 @@ function setCursor(state, index) {
     return next
 }
 
-// Visual card list across enabled provider sections. Accounts are already
-// in card order in the snapshot; this only filters by provider. A section
-// with no accounts contributes no row, so j/k and h/l skip it (R26).
+// One predicate for "this section holds cards": Panel's card repeater and
+// visualIndex use it too, so the cursor never counts a hidden card.
+function showsCards(provider) {
+    return !!provider && provider.enabled !== false && provider.installed !== false
+}
+
+// Visual card list across provider sections that show cards. Accounts are
+// already in card order in the snapshot; this only filters by provider. A
+// section with no accounts contributes no row, so j/k and h/l skip it (R26).
 function cards(snapshot) {
     var out = []
     if (!snapshot) return out
@@ -28,7 +34,7 @@ function cards(snapshot) {
     var accounts = (snapshot.state && snapshot.state.accounts) ? snapshot.state.accounts : []
     for (var i = 0; i < providers.length; i++) {
         var p = providers[i]
-        if (p.enabled === false) continue
+        if (!showsCards(p)) continue
         var ordered = []
         for (var j = 0; j < accounts.length; j++) {
             if (accounts[j].provider === p.id) ordered.push(accounts[j])

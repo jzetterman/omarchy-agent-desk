@@ -33,21 +33,27 @@ function countdown(resetsAt, nowMs) {
     return twoUnits(totalMin, "m") || "1m"
 }
 
-// Age of a timestamp, same unit rules as countdown. Minutes read "20 min ago".
+// Age of a timestamp. Under an hour reads "20 min ago" (R17); from an hour
+// up it uses countdown's units, e.g. "1h 5m ago", "2d 3h ago".
 function ago(fetchedAt, nowMs) {
     var t = Date.parse(fetchedAt)
     if (!isFinite(t)) return ""
     var ms = nowMs - t
     if (!(ms > 0)) return "just now"
     var totalMin = Math.max(1, Math.floor(ms / 60000))
-    return (twoUnits(totalMin, " min") || "1 min") + " ago"
+    if (totalMin < 60) return totalMin + " min ago"
+    return twoUnits(totalMin, "m") + " ago"
 }
 
-// Local clock time with timezone name, used on rail hover.
-function exactReset(resetsAt) {
+// Local clock time with timezone name, used on rail hover. A reset more than
+// 24 h away also names the weekday and date.
+function exactReset(resetsAt, nowMs) {
     var d = new Date(resetsAt)
     if (isNaN(d.getTime())) return ""
-    return d.toLocaleTimeString(Qt.locale(), "h:mm AP t")
+    var time = d.toLocaleTimeString(Qt.locale(), "h:mm AP t")
+    if (d.getTime() - nowMs > 24 * 3600 * 1000)
+        return d.toLocaleString(Qt.locale(), "ddd MMM d") + " · " + time
+    return time
 }
 
 // Remaining amount with unit, e.g. "6.00 USD" or "6 credits".

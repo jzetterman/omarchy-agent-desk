@@ -100,7 +100,7 @@ Item {
         anchors.topMargin: Style.space(4)
         text: {
             if (hover.containsMouse && root.window && root.window.resetsAt)
-                return Format.exactReset(root.window.resetsAt)
+                return Format.exactReset(root.window.resetsAt, root.nowMs)
             if (root.balance) return Format.balance(root.balance)
             if (root.window && root.window.resetsAt) return Format.countdown(root.window.resetsAt, root.nowMs)
             return ""

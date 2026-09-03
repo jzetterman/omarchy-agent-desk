@@ -140,6 +140,23 @@ Item {
             compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "claude")
         }
 
+        // A provider whose CLI went missing keeps its saved accounts but shows
+        // no cards; the cursor must not count them.
+        function test_cards_skip_uninstalled_provider_with_accounts() {
+            var snap = sampleSnapshot()
+            snap.providers[0].installed = false
+            verify(!Keys.showsCards(snap.providers[0]))
+            verify(Keys.showsCards(snap.providers[1]))
+            verify(!Keys.showsCards({ id: "x", enabled: false, installed: true }))
+            var list = Keys.cards(snap)
+            compare(list.length, 1)
+            compare(list[0].accountId, "cc" + "0".repeat(30))
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            compare(state.cursorIndex, 0)
+            var r = Keys.move(state, 0, 1, snap)
+            compare(r.state.cursorIndex, 0)
+        }
+
         function test_hl_skips_section_without_cards() {
             var snap = emptySectionSnapshot()
             var state = Keys.focusOnOpen(Keys.createState(), snap)

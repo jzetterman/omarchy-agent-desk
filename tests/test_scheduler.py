@@ -291,11 +291,13 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(rec["status"], "ok")
 
     def test_manual_floor_skips(self):
+        # R6: a manual refresh inside the 60 s floor is skipped; one at the
+        # floor runs again.
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, OK_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
             runner = make_runner(
-                plugin, clock=clock, floor_sec=60.0, interval_sec=900.0,
+                plugin, probe="ok", clock=clock, floor_sec=60.0, interval_sec=900.0,
             )
             aid = "b" * 32
             runner.state["accounts"] = [account(aid, str(home / ".claude"))]
@@ -303,10 +305,120 @@ class SchedulerTests(unittest.TestCase):
             runner._sync_schedule()
             runner.handle_command({"cmd": "refresh", "accountId": "all", "manual": True})
             self._wait_idle(runner)
-            starts = runner.scheduler.entries[aid]["lastStartMono"]
+            first = runner.scheduler.entries[aid]["lastStartMono"]
+            self.assertIsNotNone(first)
+            self.assertEqual(runner.records[aid]["status"], "ok")
+            clock.advance(59.0)
             runner.handle_command({"cmd": "refresh", "accountId": "all", "manual": True})
-            self.assertEqual(runner.scheduler.entries[aid]["lastStartMono"], starts)
-            self.assertFalse(runner.scheduler.entries[aid]["inflight"])
+            self._wait_idle(runner)
+            self.assertEqual(runner.scheduler.entries[aid]["lastStartMono"], first)
+            clock.advance(1.0)
+            runner.handle_command({"cmd": "refresh", "accountId": "all", "manual": True})
+            self._wait_idle(runner)
+            self.assertEqual(runner.scheduler.entries[aid]["lastStartMono"], first + 60.0)
+            runner.shutdown_workers()
+
+    def test_non_test_runner_strips_agent_desk_env_and_flag(self):
+        # E.1: AGENT_DESK_* reaches a collector only under `serve --test`.
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            aid = "k" * 32
+            with patch.dict(os.environ, {"AGENT_DESK_NOW": "123", "AGENT_DESK_CA_FILE": "/x/ca.pem"}):
+                for test_mode in (False, True):
+                    runner = make_runner(plugin, probe="ok", test_mode=test_mode)
+                    runner.state["accounts"] = [account(aid, str(home / ".claude"))]
+                    runner._sync_schedule()
+                    jobs = []
+                    with patch.object(runner, "_spawn_job", new=jobs.append):
+                        runner.scheduler.force(aid)
+                        runner.tick()
+                    self.assertEqual(len(jobs), 1)
+                    env = runner._minimal_env()
+                    leaked = sorted(k for k in env if k.startswith("AGENT_DESK_"))
+                    if test_mode:
+                        self.assertEqual(leaked, ["AGENT_DESK_CA_FILE", "AGENT_DESK_NOW"])
+                        self.assertIn("--test", jobs[0]["argv"])
+                    else:
+                        self.assertEqual(leaked, [])
+                        self.assertEqual(sorted(env), ["HOME", "LANG", "PATH"])
+                        self.assertNotIn("--test", jobs[0]["argv"])
+
+    def test_launch_argv_for_imported_account(self):
+        # E.3/E.5: an imported account launches the bare binary unless its
+        # home came from the env var, then `env VAR=home <binary>`.
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            fake_cli = str(ROOT / "tests" / "support" / "fake_cli")
+            with patch.dict(os.environ, {"PATH": fake_cli + os.pathsep + (os.environ.get("PATH") or "/usr/bin")}):
+                runner = make_runner(plugin, probe="ok")
+            self.assertEqual(runner.terminal_bin, os.path.join(fake_cli, "omarchy-launch-terminal"))
+            binary = os.path.join(fake_cli, "claude")
+            aid = "l" * 32
+            claude_home = str(home / ".claude")
+            acct = account(aid, claude_home)
+            runner.state["accounts"] = [acct]
+            events = runner.handle_command({"cmd": "launch", "accountId": aid})
+            self.assertEqual(events[0]["event"], "snapshot")
+            acct["homeFromEnv"] = True
+            events = runner.handle_command({"cmd": "launch", "accountId": aid})
+            self.assertEqual(events[0]["event"], "snapshot")
+            log = home / ".launch.log"
+            deadline = time.time() + 2.0
+            recorded = []
+            while time.time() < deadline:
+                if log.is_file():
+                    recorded = json.loads(log.read_text(encoding="utf-8"))
+                    if len(recorded) == 2:
+                        break
+                time.sleep(0.02)
+            self.assertEqual(recorded, [
+                [binary],
+                ["/usr/bin/env", f"CLAUDE_CONFIG_DIR={claude_home}", binary],
+            ])
+
+    def test_pinned_clock_pins_only_now(self):
+        # `serve --test` with AGENT_DESK_NOW pins wall time; monotonic must
+        # stay real so floors and intervals still elapse.
+        from agentdesk.runner import PinnedClock
+        clock = PinnedClock(NOW)
+        self.assertEqual(clock.now(), NOW)
+        self.assertAlmostEqual(clock.monotonic(), time.monotonic(), delta=1.0)
+
+    def test_spawn_job_prunes_dead_threads(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin)
+            job = {"type": "noop", "argv": [sys.executable, "-c", "pass"], "timeout": 2.0}
+            runner._spawn_job(job)
+            runner.threads[0].join(timeout=2.0)
+            self.assertFalse(runner.threads[0].is_alive())
+            runner._spawn_job(job)
+            self.assertEqual(len(runner.threads), 1)
+            runner.shutdown_workers()
+
+    def test_load_records_unlinks_non_object_json(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            aid = "m" * 32
+            rec_dir = state_dir(home) / "records" / "claude"
+            rec_dir.mkdir(parents=True)
+            rec_path = rec_dir / f"{aid}.json"
+            rec_path.write_text("[1, 2]", encoding="utf-8")
+            runner = make_runner(plugin)
+            runner.state["accounts"] = [account(aid, str(home / ".claude"))]
+            runner._load_records()
+            self.assertNotIn(aid, runner.records)
+            self.assertFalse(rec_path.exists())
+
+    def test_provider_order_drops_unknown_and_appends_unlisted(self):
+        # C.6: unknown ids are dropped, unlisted ids appended in id order.
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin)
+            runner.handle_command({"cmd": "settings", "providerOrder": ["nope", "claude", "claude"]})
+            self.assertEqual(runner._ordered_provider_ids(), ["claude"])
+            runner.handle_command({"cmd": "settings", "providerOrder": []})
+            self.assertEqual(runner._ordered_provider_ids(), ["claude"])
 
     def test_single_flight(self):
         with fixture_home("signed-in") as home:

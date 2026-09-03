@@ -261,12 +261,16 @@ CursorSurface {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
+                // R25 / plan F: cached failures show their age; every other
+                // strip (not-signed-in, expired, failure with no cache) shows
+                // the record's help line.
                 readonly property string statusText: {
                     var label = root.statusLabels[root.status] || ""
                     if (!label) return ""
                     if (root.statusStripHasAge)
                         return label + " · " + Format.ago(root.record.fetchedAt, root.nowMs)
-                    return label
+                    var help = String((root.record && root.record.help) || "")
+                    return help ? label + " · " + help : label
                 }
             }
         }

@@ -23,7 +23,9 @@ Item {
         generation: 0
     })
 
-    property string captionText: ""
+    // Every caption event fires, even a repeat of the last text (Panel latches it).
+    signal caption(string text)
+
     property var exitTimes: []
     property int lockRetries: 0
     property int restartBackoffMs: 1000
@@ -59,7 +61,7 @@ Item {
         if (parsed.event === "snapshot") {
             root.snapshot = parsed
         } else if (parsed.event === "caption") {
-            root.captionText = parsed.text || ""
+            root.caption(String(parsed.text || ""))
         }
     }
 

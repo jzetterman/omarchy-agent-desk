@@ -126,7 +126,7 @@ def compute_readout(accounts, records, active, providers, provider_order, scope,
 class Scheduler:
     """Per-account due times, single-flight, backoff, and collector spawn.
 
-    A hold flag arrives with Phase 4 (login/removal). Until then an inflight
+    A hold flag arrives with Phase 3 (login/removal). Until then an inflight
     entry is the only thing that blocks a new spawn.
     """
 
@@ -218,6 +218,17 @@ class Scheduler:
         else:
             entry["backoffMultiplier"] = 1
         entry["nextDueMono"] = entry["lastStartMono"] + self.interval_sec * entry["backoffMultiplier"]
+
+
+class PinnedClock(Clock):
+    """`serve --test` clock: wall time pinned to AGENT_DESK_NOW, monotonic real
+    so floors and intervals still elapse."""
+
+    def __init__(self, now: float):
+        self._now = float(now)
+
+    def now(self) -> float:
+        return self._now
 
 
 class Runner:
@@ -340,14 +351,18 @@ class Runner:
                     except OSError:
                         pass
                     continue
+                # E.1: only a C.2 record object is cached; anything else is unlinked.
                 try:
-                    rec = normalize(json.loads(path.read_text(encoding="utf-8")))
-                    self.records[aid] = rec
-                except (OSError, json.JSONDecodeError, TypeError):
-                    try:
-                        path.unlink()
-                    except OSError:
-                        pass
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raw = None
+                if isinstance(raw, dict):
+                    self.records[aid] = normalize(raw)
+                    continue
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
 
     def _write_record(self, account_id: str, rec: dict) -> None:
         acct = self._account(account_id)
@@ -531,6 +546,7 @@ class Runner:
         return env
 
     def _spawn_job(self, job: dict) -> None:
+        self.threads = [t for t in self.threads if t.is_alive()]
         thread = threading.Thread(target=self._job_worker, args=(job,), daemon=True)
         self.threads.append(thread)
         thread.start()
@@ -1123,16 +1139,7 @@ def main(argv: list[str]) -> int:
             plugin_dir = Path(argv[idx + 1])
     clock = Clock()
     if test_mode and os.environ.get("AGENT_DESK_NOW"):
-        now = float(os.environ["AGENT_DESK_NOW"])
-
-        class _EnvClock(Clock):
-            def now(self) -> float:
-                return now
-
-            def monotonic(self) -> float:
-                return now
-
-        clock = _EnvClock()
+        clock = PinnedClock(float(os.environ["AGENT_DESK_NOW"]))
     runner = Runner(plugin_dir=plugin_dir, clock=clock, test_mode=test_mode)
     try:
         return runner.serve(sys.stdin, sys.stdout)
