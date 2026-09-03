@@ -1,0 +1,14 @@
+{
+  "five_hour": {"utilization": 5, "resets_at": "2023-11-14T15:13:20Z"},
+  "seven_day": {"utilization": 81, "resets_at": "2023-11-19T13:46:40Z"},
+  "seven_day_oauth_apps": {"utilization": 81, "resets_at": "2023-11-19T13:46:40Z"},
+  "limits": [
+    {
+      "kind": "weekly_scoped",
+      "percent": 2,
+      "resets_at": "2023-11-19T13:46:40Z",
+      "scope": {"model": {"id": "claude-fable-5", "display_name": "Fable"}}
+    }
+  ],
+  "extra_usage": {"is_enabled": true, "monthly_limit": 1000, "used_credits": 250}
+}

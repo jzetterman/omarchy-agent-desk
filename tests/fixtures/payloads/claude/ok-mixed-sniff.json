@@ -1,0 +1,5 @@
+{
+  "five_hour": {"utilization": 0.4, "resets_at": "2023-11-14T15:13:20Z"},
+  "seven_day": {"utilization": 81, "resets_at": "2023-11-19T13:46:40Z"},
+  "seven_day_oauth_apps": {"utilization": 81, "resets_at": "2023-11-19T13:46:40Z"}
+}

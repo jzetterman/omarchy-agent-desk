@@ -1,0 +1,171 @@
+import QtQuick
+import QtTest
+import "../../Keys.js" as Keys
+
+Item {
+    width: 100
+    height: 100
+
+    TestCase {
+        name: "KeysListMode"
+
+        function sampleSnapshot() {
+            return {
+                state: {
+                    accounts: [
+                        { id: "aa" + "0".repeat(30), provider: "claude", kind: "imported", name: "personal", createdAt: "t1" },
+                        { id: "bb" + "0".repeat(30), provider: "claude", kind: "isolated", name: "work", createdAt: "t2" },
+                        { id: "cc" + "0".repeat(30), provider: "codex", kind: "imported", name: "default", createdAt: "t3" }
+                    ],
+                    active: { claude: "aa" + "0".repeat(30), codex: "cc" + "0".repeat(30) }
+                },
+                providers: [
+                    { id: "claude", name: "Claude Code", enabled: true, installed: true },
+                    { id: "codex", name: "Codex", enabled: true, installed: true }
+                ],
+                firstProviderId: "claude"
+            }
+        }
+
+        function test_cursor_walk_and_wrap() {
+            var snap = sampleSnapshot()
+            var state = Keys.createState()
+            state = Keys.focusOnOpen(state, snap)
+            compare(Keys.cards(snap)[state.cursorIndex].accountId, "aa" + "0".repeat(30))
+            var r = Keys.move(state, 0, 1, snap)
+            compare(r.state.cursorIndex, 1)
+            r = Keys.move(r.state, 0, 1, snap)
+            compare(r.state.cursorIndex, 2)
+            r = Keys.move(r.state, 0, 1, snap)
+            compare(r.state.cursorIndex, 0)
+        }
+
+        function test_section_jump() {
+            var snap = sampleSnapshot()
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            var r = Keys.move(state, 1, 0, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "codex")
+            r = Keys.move(r.state, -1, 0, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "claude")
+        }
+
+        function test_activate_sets_active() {
+            var snap = sampleSnapshot()
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            state = Keys.move(state, 0, 1, snap).state
+            var action = Keys.activate(state, snap)
+            compare(action.type, "set-active")
+            compare(action.accountId, "bb" + "0".repeat(30))
+        }
+
+        function test_escape_closes() {
+            var state = Keys.createState()
+            var action = Keys.closeRequested(state)
+            compare(action.type, "close")
+        }
+
+        function test_r_refreshes() {
+            var action = Keys.textKey(Keys.createState(), "r", sampleSnapshot())
+            compare(action.type, "refresh")
+        }
+
+        function test_move_and_focus_return_fresh_state() {
+            var snap = sampleSnapshot()
+            var state = Keys.createState()
+            var focused = Keys.focusOnOpen(state, snap)
+            verify(focused !== state)
+            compare(state.cursorIndex, 0)
+            var moved = Keys.move(focused, 0, 1, snap)
+            verify(moved.state !== focused)
+            compare(focused.cursorIndex, 0)
+            compare(moved.state.cursorIndex, 1)
+        }
+
+        function test_set_cursor_owns_shape() {
+            var state = Keys.createState()
+            var next = Keys.setCursor(state, 3)
+            compare(next.cursorIndex, 3)
+            compare(next.mode, "list")
+            verify(next !== state)
+            compare(state.cursorIndex, 0)
+        }
+
+        function test_cards_filter_only_no_sort() {
+            var snap = sampleSnapshot()
+            snap.state.accounts = [
+                { id: "bb" + "0".repeat(30), provider: "claude", kind: "isolated", name: "work", createdAt: "t2" },
+                { id: "aa" + "0".repeat(30), provider: "claude", kind: "imported", name: "personal", createdAt: "t1" }
+            ]
+            var list = Keys.cards(snap)
+            compare(list[0].accountId, "bb" + "0".repeat(30))
+            compare(list[1].accountId, "aa" + "0".repeat(30))
+        }
+
+        function emptySectionSnapshot() {
+            return {
+                state: {
+                    accounts: [
+                        { id: "aa" + "0".repeat(30), provider: "claude", kind: "imported", name: "personal", createdAt: "t1" },
+                        { id: "cc" + "0".repeat(30), provider: "codex", kind: "imported", name: "default", createdAt: "t3" }
+                    ],
+                    active: { claude: "aa" + "0".repeat(30), codex: "cc" + "0".repeat(30) }
+                },
+                providers: [
+                    { id: "claude", name: "Claude Code", enabled: true, installed: true },
+                    { id: "grok", name: "Grok", enabled: true, installed: false },
+                    { id: "codex", name: "Codex", enabled: true, installed: true }
+                ],
+                firstProviderId: "claude"
+            }
+        }
+
+        function test_cards_omit_empty_section_placeholder() {
+            var snap = emptySectionSnapshot()
+            var list = Keys.cards(snap)
+            compare(list.length, 2)
+            compare(list[0].accountId, "aa" + "0".repeat(30))
+            compare(list[1].accountId, "cc" + "0".repeat(30))
+            for (var i = 0; i < list.length; i++)
+                verify(list[i].accountId !== null && list[i].accountId !== undefined)
+        }
+
+        function test_jk_does_not_land_on_empty_section() {
+            var snap = emptySectionSnapshot()
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            compare(Keys.cards(snap)[state.cursorIndex].accountId, "aa" + "0".repeat(30))
+            var r = Keys.move(state, 0, 1, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "codex")
+            compare(Keys.cards(snap)[r.state.cursorIndex].accountId, "cc" + "0".repeat(30))
+            r = Keys.move(r.state, 0, 1, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "claude")
+        }
+
+        // A provider whose CLI went missing keeps its saved accounts but shows
+        // no cards; the cursor must not count them.
+        function test_cards_skip_uninstalled_provider_with_accounts() {
+            var snap = sampleSnapshot()
+            snap.providers[0].installed = false
+            verify(!Keys.showsCards(snap.providers[0]))
+            verify(Keys.showsCards(snap.providers[1]))
+            verify(!Keys.showsCards({ id: "x", enabled: false, installed: true }))
+            var list = Keys.cards(snap)
+            compare(list.length, 1)
+            compare(list[0].accountId, "cc" + "0".repeat(30))
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            compare(state.cursorIndex, 0)
+            var r = Keys.move(state, 0, 1, snap)
+            compare(r.state.cursorIndex, 0)
+        }
+
+        function test_hl_skips_section_without_cards() {
+            var snap = emptySectionSnapshot()
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            var r = Keys.move(state, 1, 0, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "codex")
+            compare(Keys.cards(snap)[r.state.cursorIndex].accountId, "cc" + "0".repeat(30))
+            r = Keys.move(r.state, -1, 0, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "claude")
+            compare(Keys.cards(snap)[r.state.cursorIndex].accountId, "aa" + "0".repeat(30))
+        }
+    }
+}

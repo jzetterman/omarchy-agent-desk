@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Fake `claude` CLI. Script comes from $HOME/.fake-cli.json."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+
+def load_script():
+    path = Path(os.environ.get("HOME", "")) / ".fake-cli.json"
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def home_dir():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+
+
+def main(argv):
+    script = load_script()
+    if argv[:2] == ["auth", "status"]:
+        cred = Path(home_dir()) / ".credentials.json"
+        email = "unknown"
+        identity = Path(home_dir()) / ".claude.json"
+        fallback = Path.home() / ".claude.json"
+        for candidate in (identity, fallback):
+            if candidate.is_file():
+                try:
+                    doc = json.loads(candidate.read_text(encoding="utf-8"))
+                    email = (doc.get("oauthAccount") or {}).get("emailAddress") or email
+                except json.JSONDecodeError:
+                    pass
+                break
+        print(f"{email} home={home_dir()} creds={cred.is_file()}")
+        return 0
+    if argv[:2] == ["auth", "login"]:
+        home = Path(home_dir())
+        home.mkdir(parents=True, exist_ok=True)
+        if script.get("loginWaitsForGo"):
+            go = home / "go"
+            while not go.exists():
+                time.sleep(0.05)
+        else:
+            time.sleep(float(script.get("loginDelay") or 0))
+        dest = home / ".credentials.json"
+        dest.write_text(json.dumps(script.get("loginCredentials") or {}), encoding="utf-8")
+        return 0
+    if argv[:2] == ["auth", "logout"]:
+        log = script.get("logLog")
+        if log:
+            Path(log).write_text((Path(log).read_text() if Path(log).exists() else "") + "logout\n")
+        return int(script.get("logoutExit") or 0)
+    print("fake claude", " ".join(argv))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

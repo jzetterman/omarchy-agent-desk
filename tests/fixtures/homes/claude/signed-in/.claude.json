@@ -1,0 +1,8 @@
+{
+  "oauthAccount": {
+    "emailAddress": "John@Example.COM",
+    "organizationName": "Example Org"
+  },
+  "mcpServers": {"keep": true},
+  "hasCompletedOnboarding": true
+}

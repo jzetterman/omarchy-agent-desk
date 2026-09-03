@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# rsync this repo into ~/.config/omarchy/plugins/<id>/ for shell hot reload.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+ID="io.github.jzetterman.agent-desk"
+DEST="${HOME}/.config/omarchy/plugins/${ID}"
+mkdir -p "$(dirname "$DEST")"
+rsync -a --delete \
+  --exclude '.git/' \
+  --exclude 'docs/' \
+  --exclude 'tests/' \
+  "$ROOT/" "$DEST/"
+echo "synced $ROOT -> $DEST"

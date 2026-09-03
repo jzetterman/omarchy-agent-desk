@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Local check: qmllint, plugin validate, python tests, QML tests, plaintext grep.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$ROOT"
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+
+mapfile -t qml_files < <(find . -name '*.qml' -not -path './tests/qml/*' -print | sort)
+[[ ${#qml_files[@]} -gt 0 ]] || { echo "qmllint: no QML files" >&2; exit 1; }
+QMLLINT=""
+if [[ -x /usr/lib/qt6/bin/qmllint ]]; then
+  QMLLINT=/usr/lib/qt6/bin/qmllint
+elif command -v qmllint >/dev/null 2>&1; then
+  QMLLINT="$(command -v qmllint)"
+else
+  echo "qmllint: not found" >&2
+  exit 1
+fi
+# qs.Ui/qs.Commons have no qs/ directory, so qmllint warns the same way it
+# does on first-party panels. Treat exit 0 as success and keep the log on failure.
+qml_log="$(mktemp)"
+if ! "$QMLLINT" -I "$OMARCHY_PATH/shell" "${qml_files[@]}" >"$qml_log" 2>&1; then
+  cat "$qml_log"
+  rm -f "$qml_log"
+  exit 1
+fi
+rm -f "$qml_log"
+echo "qmllint: ok"
+
+validate_bin="$OMARCHY_PATH/bin/omarchy-plugin-validate"
+if [[ ! -x $validate_bin ]]; then
+  validate_bin="$(command -v omarchy-plugin-validate || true)"
+fi
+if [[ -z ${validate_bin:-} ]]; then
+  echo "validate: omarchy-plugin-validate not found" >&2
+  exit 1
+fi
+"$validate_bin" "$ROOT"
+echo "validate: ok"
+
+python3 -m unittest discover -s tests -v
+QMLTEST=""
+if [[ -x /usr/lib/qt6/bin/qmltestrunner ]]; then
+  QMLTEST=/usr/lib/qt6/bin/qmltestrunner
+elif command -v qmltestrunner >/dev/null 2>&1; then
+  QMLTEST="$(command -v qmltestrunner)"
+fi
+if [[ -z $QMLTEST ]]; then
+  echo "qmltestrunner: not found" >&2
+  exit 1
+fi
+"$QMLTEST" -platform offscreen -input tests/qml
+bash tests/test_qml_plaintext.sh

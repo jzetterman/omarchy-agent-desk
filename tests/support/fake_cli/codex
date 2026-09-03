@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Fake `codex` CLI. Script comes from $HOME/.fake-cli.json."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def load_script():
+    path = Path(os.environ.get("HOME", "")) / ".fake-cli.json"
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def main(argv):
+    script = load_script()
+    if argv[:2] == ["login"] or (argv and argv[0] == "login"):
+        return 0
+    if argv and argv[0] == "logout":
+        log = script.get("logLog")
+        if log:
+            Path(log).write_text((Path(log).read_text() if Path(log).exists() else "") + "logout\n")
+        return int(script.get("logoutExit") or 0)
+    if "app-server" in argv:
+        fixture = script.get("codexRpcFixture") or {}
+        sys.stdout.write(json.dumps(fixture) + "\n")
+        sys.stdout.flush()
+        return 0
+    print("fake codex", " ".join(argv))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
