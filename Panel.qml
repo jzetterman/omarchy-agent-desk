@@ -197,6 +197,7 @@ Panel {
     }
 
     // Flat visual index of a card, matching Keys.cards, from the keyed models.
+    // Sections without accounts hold no row (R26: only cards are focusable).
     function visualIndex(providerId, accountId) {
         var idx = 0
         for (var i = 0; i < providerIds.length; i++) {
@@ -206,10 +207,6 @@ Panel {
             var aids = accountIdsByProvider[pid] || []
             for (var j = 0; j < aids.length; j++) {
                 if (pid === providerId && aids[j] === accountId) return idx
-                idx++
-            }
-            if (aids.length === 0) {
-                if (pid === providerId && (accountId === null || accountId === undefined)) return idx
                 idx++
             }
         }
@@ -619,6 +616,7 @@ Panel {
                                     provider: section.provider
                                     nowMs: root.nowMs
                                     refreshIntervalSec: root.validated.refreshIntervalSec
+                                    criticalThreshold: root.validated.criticalThreshold
                                     urgent: root.urgent
                                     fontFamily: root.fontFamily
                                     foreground: root.foreground

@@ -13,6 +13,7 @@ CursorSurface {
     property var provider: ({})
     property double nowMs: Date.now()
     property int refreshIntervalSec: 900
+    property real criticalThreshold: 0.9
     property color urgent: Color.urgent
     property string fontFamily: Style.font.family
     property int cardIndex: 0
@@ -219,6 +220,7 @@ CursorSurface {
                     width: parent.width
                     window: root.windowById(modelData)
                     nowMs: root.nowMs
+                    criticalThreshold: root.criticalThreshold
                     foreground: root.foreground
                     urgent: root.urgent
                     fontFamily: root.fontFamily
@@ -231,6 +233,7 @@ CursorSurface {
                 width: parent.width
                 balance: root.record ? root.record.balance : null
                 nowMs: root.nowMs
+                criticalThreshold: root.criticalThreshold
                 foreground: root.foreground
                 urgent: root.urgent
                 fontFamily: root.fontFamily

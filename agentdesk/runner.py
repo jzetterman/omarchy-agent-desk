@@ -283,6 +283,7 @@ class Runner:
         self._dirty = False
         self._probe_inflight = False
         self._probe_proc = None
+        self._probe_keep_logged = False
         self.persist_error = None
         self.python_bin = shutil.which("python3") or sys.executable
         self.terminal_bin = shutil.which("omarchy-launch-terminal")
@@ -605,6 +606,11 @@ class Runner:
         if self.state_error:
             return
         self.detect_and_import()
+        # E.1/E.6: no collector runs before the first probe result. Cached records
+        # keep serving; the tick that reaps the result spawns whatever is due,
+        # including manual refreshes queued meanwhile.
+        if self.path_probe == "pending":
+            return
         if self.manual_queue:
             if "all" in self.manual_queue:
                 manual = set(self.scheduler.entries)
@@ -688,23 +694,28 @@ class Runner:
         old_path = self.path
         old_probe = self.path_probe
         old_envs = dict(self.probe_envs)
-        if item.get("timed_out") or item.get("code") not in (0, None):
-            self.path_probe = "fallback"
-            self.path = self.fallback
-            self._log("probe fallback")
-            if self._probe_changed(old_path, old_probe, old_envs):
-                self._mark_dirty()
+        failed = bool(item.get("timed_out")) or item.get("code") not in (0, None)
+        values = []
+        if not failed:
+            text = (item.get("stdout") or b"").decode("utf-8", errors="replace")
+            values = parse_probe_output(text)
+        if failed or not values:
+            if old_probe == "ok":
+                # E.6: a good interactive PATH outlives a failed re-probe; the
+                # fallback is only for a runner that never had one. Logged once
+                # per failure streak.
+                if not self._probe_keep_logged:
+                    self._log("probe failed · keeping previous PATH")
+                    self._probe_keep_logged = True
+            else:
+                self.path_probe = "fallback"
+                self.path = self.fallback
+                self._log("probe fallback")
+                if self._probe_changed(old_path, old_probe, old_envs):
+                    self._mark_dirty()
             self.detect_and_import()
             return
-        text = (item.get("stdout") or b"").decode("utf-8", errors="replace")
-        values = parse_probe_output(text)
-        if not values:
-            self.path_probe = "fallback"
-            self.path = self.fallback
-            if self._probe_changed(old_path, old_probe, old_envs):
-                self._mark_dirty()
-            self.detect_and_import()
-            return
+        self._probe_keep_logged = False
         self.path = values[0] or self.fallback
         envs = self._home_envs()
         self.probe_envs = {}
@@ -1061,7 +1072,9 @@ class Runner:
         stdin_fd = stdin.fileno()
         buf = b""
         while not self._stop:
-            timeout = self.scheduler.next_timeout()
+            # Nothing is due before the first probe result (tick); the result
+            # itself wakes the loop through the pipe.
+            timeout = None if self.path_probe == "pending" else self.scheduler.next_timeout()
             try:
                 ready, _, _ = select.select([stdin_fd, self.wake_r], [], [], timeout)
             except (ValueError, OSError):

@@ -21,9 +21,10 @@ Item {
         if (window) return Number(window.used || 0)
         return 0
     }
-    // Bar colouring is the runner's; this local tint is the rail's last-10% alarm.
-    readonly property real alarmAt: 0.9
-    readonly property bool alarming: used >= alarmAt
+    // Bar colouring is the runner's; the rail tints urgent at the same
+    // validated criticalThreshold setting (R27), passed down from Panel.
+    property real criticalThreshold: 0.9
+    readonly property bool alarming: used >= criticalThreshold
     readonly property real thickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
 
     implicitHeight: labelRow.implicitHeight + thickness + caption.implicitHeight + Style.space(8)

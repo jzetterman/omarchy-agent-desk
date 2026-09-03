@@ -19,7 +19,8 @@ function setCursor(state, index) {
 }
 
 // Visual card list across enabled provider sections. Accounts are already
-// in card order in the snapshot; this only filters by provider.
+// in card order in the snapshot; this only filters by provider. A section
+// with no accounts contributes no row, so j/k and h/l skip it (R26).
 function cards(snapshot) {
     var out = []
     if (!snapshot) return out
@@ -33,20 +34,7 @@ function cards(snapshot) {
             if (accounts[j].provider === p.id) ordered.push(accounts[j])
         }
         for (var c = 0; c < ordered.length; c++) {
-            out.push({
-                providerId: p.id,
-                accountId: ordered[c].id,
-                sectionIndex: i,
-                notInstalled: false
-            })
-        }
-        if (ordered.length === 0) {
-            out.push({
-                providerId: p.id,
-                accountId: null,
-                sectionIndex: i,
-                notInstalled: p.installed === false
-            })
+            out.push({ providerId: p.id, accountId: ordered[c].id, sectionIndex: i })
         }
     }
     return out
@@ -70,7 +58,8 @@ function focusOnOpen(state, snapshot) {
     return next
 }
 
-// j/k walk cards (wrap); h/l jump to the first card of the next/previous section.
+// j/k walk cards (wrap); h/l jump to the first card of the next/previous
+// section that has cards (no wrap).
 function move(state, dx, dy, snapshot) {
     var list = cards(snapshot)
     var next = _copyState(state)

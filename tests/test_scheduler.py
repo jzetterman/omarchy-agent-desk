@@ -111,6 +111,36 @@ print(json.dumps({
 }))
 '''
 
+# Replaces a cache with not-installed if it runs; writes a spawn marker in --home.
+SPAWNING_NOT_INSTALLED_COLLECTOR = r'''
+import json, sys
+from pathlib import Path
+home = ""
+args = sys.argv[1:]
+i = 0
+while i < len(args):
+    if args[i] == "--home" and i + 1 < len(args):
+        home = args[i + 1]
+        i += 2
+        continue
+    i += 1
+if home:
+    Path(home).mkdir(parents=True, exist_ok=True)
+    (Path(home) / "collector-spawned").write_text("1", encoding="utf-8")
+print(json.dumps({
+    "schemaVersion": 1,
+    "provider": "claude",
+    "mode": "full",
+    "status": "not-installed",
+    "statusReason": None,
+    "help": "CLI not found",
+    "identity": None,
+    "windows": [],
+    "balance": None,
+    "collectedAt": "2023-11-14T13:46:41Z",
+}))
+'''
+
 DESCRIPTOR = {
     "schemaVersion": 1,
     "id": "claude",
@@ -175,7 +205,9 @@ def account(aid, home, generation=1, provider="claude"):
     }
 
 
-def make_runner(plugin, clock=None, **kwargs):
+def make_runner(plugin, clock=None, probe=None, **kwargs):
+    """Build a Runner; `probe="ok"` stands in for a finished PATH probe so
+    scheduling tests can tick without start() (E.1: nothing runs while pending)."""
     kw = dict(
         plugin_dir=plugin,
         clock=clock or FakeClock(now=NOW, monotonic=1000.0),
@@ -187,7 +219,10 @@ def make_runner(plugin, clock=None, **kwargs):
         test_mode=True,
     )
     kw.update(kwargs)
-    return Runner(**kw)
+    runner = Runner(**kw)
+    if probe:
+        runner.path_probe = probe
+    return runner
 
 
 class MergeRecordTests(unittest.TestCase):
@@ -222,7 +257,7 @@ class SchedulerTests(unittest.TestCase):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, FAILING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
-            runner = make_runner(plugin, clock=clock, floor_sec=0.05, interval_sec=1.0)
+            runner = make_runner(plugin, probe="ok", clock=clock, floor_sec=0.05, interval_sec=1.0)
             aid = "a" * 32
             runner.state["accounts"] = [account(aid, str(home / ".claude"))]
             runner.state["active"] = {"claude": aid}
@@ -278,7 +313,7 @@ class SchedulerTests(unittest.TestCase):
             plugin = write_plugin(home, SLEEPING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
             runner = make_runner(
-                plugin, clock=clock, collector_timeout_sec=2.0, floor_sec=0.0, interval_sec=900.0,
+                plugin, probe="ok", clock=clock, collector_timeout_sec=2.0, floor_sec=0.0, interval_sec=900.0,
             )
             aid = "c" * 32
             slow_home = str(home / "slow")
@@ -299,7 +334,7 @@ class SchedulerTests(unittest.TestCase):
             plugin = write_plugin(home, SLEEPING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
             runner = make_runner(
-                plugin, clock=clock, collector_timeout_sec=0.2, grace_sec=0.2,
+                plugin, probe="ok", clock=clock, collector_timeout_sec=0.2, grace_sec=0.2,
                 floor_sec=0.0, interval_sec=1.0,
             )
             slow_id = "d" * 32
@@ -343,7 +378,7 @@ class SchedulerTests(unittest.TestCase):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, OK_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
-            runner = make_runner(plugin, clock=clock, floor_sec=0.0, interval_sec=1.0)
+            runner = make_runner(plugin, probe="ok", clock=clock, floor_sec=0.0, interval_sec=1.0)
             aid = "f" * 32
             runner.state["accounts"] = [account(aid, str(home / ".claude"))]
             runner.state["active"] = {"claude": aid}
@@ -434,6 +469,92 @@ class SchedulerTests(unittest.TestCase):
             self._wait_probe(runner, timeout=3.0)
             self.assertEqual(runner.path_probe, "fallback")
             self.assertEqual(runner.path, runner.fallback)
+            runner.shutdown_workers()
+
+    def test_pending_probe_does_not_spawn_collectors(self):
+        # G1a: a hanging SHELL must not collect on the fallback PATH; last-known
+        # windows and identity stay until the first probe result.
+        with fixture_home("signed-in") as home:
+            hang = home / "hang_shell"
+            hang.write_text("#!/bin/bash\nexec sleep 30\n", encoding="utf-8")
+            hang.chmod(hang.stat().st_mode | stat.S_IEXEC)
+            os.environ["SHELL"] = str(hang)
+            plugin = write_plugin(home, SPAWNING_NOT_INSTALLED_COLLECTOR)
+            aid = "d" * 32  # hex: state.validate rejects other ids
+            claude_home = home / ".claude"
+            rec = {
+                "schemaVersion": 1,
+                "provider": "claude",
+                "mode": "full",
+                "status": "ok",
+                "statusReason": None,
+                "help": "",
+                "identity": {"email": "keep@example.com", "org": "Org", "plan": "Max"},
+                "windows": [{
+                    "id": "session", "kind": "session", "label": "Session",
+                    "used": 0.42, "resetsAt": None,
+                }],
+                "balance": None,
+                "collectedAt": "2023-11-14T13:46:40Z",
+                "fetchedAt": "2023-11-14T13:46:40Z",
+                "accountId": aid,
+                "generation": 1,
+                "installed": True,
+            }
+            rec_dir = state_dir(home) / "records" / "claude"
+            rec_dir.mkdir(parents=True)
+            (rec_dir / f"{aid}.json").write_text(json.dumps(rec), encoding="utf-8")
+            (config_dir(home) / "state.json").write_text(json.dumps({
+                "schemaVersion": 1,
+                "generation": 1,
+                "accounts": [account(aid, str(claude_home))],
+                "active": {"claude": aid},
+                "routing": {
+                    "installed": False, "partial": False, "shims": [],
+                    "shadowed": {}, "rcFile": None, "rcCreated": False,
+                },
+            }), encoding="utf-8")
+            runner = make_runner(plugin, probe_timeout_sec=2.0, grace_sec=0.2, floor_sec=0.0)
+            self.assertEqual(runner.start(), 0)
+            self.assertEqual(runner.path_probe, "pending")
+            self.assertEqual(runner.records[aid]["status"], "ok")
+            deadline = time.time() + 0.3
+            while time.time() < deadline:
+                runner.tick()
+                self.assertEqual(runner.path_probe, "pending")
+                self.assertFalse(
+                    any(e.get("inflight") for e in runner.scheduler.entries.values()),
+                    "collector must not spawn while path_probe is pending",
+                )
+                time.sleep(0.02)
+            self.assertFalse((claude_home / "collector-spawned").exists())
+            cached = runner.records[aid]
+            self.assertEqual(cached["status"], "ok")
+            self.assertEqual(cached["identity"]["email"], "keep@example.com")
+            self.assertEqual(cached["windows"][0]["used"], 0.42)
+            runner.shutdown_workers()
+
+    def test_failed_reprobe_keeps_successful_path(self):
+        # G1b: a later failed/timed-out probe must not replace a good PATH.
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin)
+            body = b"\n__AGENT_DESK__/interactive/bin:/usr/bin__AGENT_DESK__\n\n__AGENT_DESK____AGENT_DESK__\n"
+            runner._handle_probe({"type": "probe", "timed_out": False, "code": 0, "stdout": body})
+            self.assertEqual(runner.path_probe, "ok")
+            self.assertTrue(runner.path.startswith("/interactive/bin"))
+            good = runner.path
+            runner._handle_probe({"type": "probe", "timed_out": True, "code": None, "stdout": b""})
+            self.assertEqual(runner.path_probe, "ok")
+            self.assertEqual(runner.path, good)
+            log = (state_dir(home) / "runner.log").read_text(encoding="utf-8")
+            self.assertIn("keeping previous PATH", log)
+            self.assertEqual(log.count("keeping previous PATH"), 1)
+            runner._handle_probe({"type": "probe", "timed_out": True, "code": 1, "stdout": b""})
+            self.assertEqual(runner.path_probe, "ok")
+            self.assertEqual(runner.path, good)
+            log = (state_dir(home) / "runner.log").read_text(encoding="utf-8")
+            self.assertEqual(log.count("keeping previous PATH"), 1)
             runner.shutdown_workers()
 
     def test_unreadable_state_leaves_records(self):
@@ -596,7 +717,7 @@ class SchedulerTests(unittest.TestCase):
             plugin = write_plugin(home, SLEEPING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
             runner = make_runner(
-                plugin, clock=clock, collector_timeout_sec=2.0, floor_sec=0.0, interval_sec=900.0,
+                plugin, probe="ok", clock=clock, collector_timeout_sec=2.0, floor_sec=0.0, interval_sec=900.0,
             )
             aid = "i" * 32
             slow_home = str(home / "slow")

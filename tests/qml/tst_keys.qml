@@ -100,5 +100,55 @@ Item {
             compare(list[0].accountId, "bb" + "0".repeat(30))
             compare(list[1].accountId, "aa" + "0".repeat(30))
         }
+
+        function emptySectionSnapshot() {
+            return {
+                state: {
+                    accounts: [
+                        { id: "aa" + "0".repeat(30), provider: "claude", kind: "imported", name: "personal", createdAt: "t1" },
+                        { id: "cc" + "0".repeat(30), provider: "codex", kind: "imported", name: "default", createdAt: "t3" }
+                    ],
+                    active: { claude: "aa" + "0".repeat(30), codex: "cc" + "0".repeat(30) }
+                },
+                providers: [
+                    { id: "claude", name: "Claude Code", enabled: true, installed: true },
+                    { id: "grok", name: "Grok", enabled: true, installed: false },
+                    { id: "codex", name: "Codex", enabled: true, installed: true }
+                ],
+                firstProviderId: "claude"
+            }
+        }
+
+        function test_cards_omit_empty_section_placeholder() {
+            var snap = emptySectionSnapshot()
+            var list = Keys.cards(snap)
+            compare(list.length, 2)
+            compare(list[0].accountId, "aa" + "0".repeat(30))
+            compare(list[1].accountId, "cc" + "0".repeat(30))
+            for (var i = 0; i < list.length; i++)
+                verify(list[i].accountId !== null && list[i].accountId !== undefined)
+        }
+
+        function test_jk_does_not_land_on_empty_section() {
+            var snap = emptySectionSnapshot()
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            compare(Keys.cards(snap)[state.cursorIndex].accountId, "aa" + "0".repeat(30))
+            var r = Keys.move(state, 0, 1, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "codex")
+            compare(Keys.cards(snap)[r.state.cursorIndex].accountId, "cc" + "0".repeat(30))
+            r = Keys.move(r.state, 0, 1, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "claude")
+        }
+
+        function test_hl_skips_section_without_cards() {
+            var snap = emptySectionSnapshot()
+            var state = Keys.focusOnOpen(Keys.createState(), snap)
+            var r = Keys.move(state, 1, 0, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "codex")
+            compare(Keys.cards(snap)[r.state.cursorIndex].accountId, "cc" + "0".repeat(30))
+            r = Keys.move(r.state, -1, 0, snap)
+            compare(Keys.cards(snap)[r.state.cursorIndex].providerId, "claude")
+            compare(Keys.cards(snap)[r.state.cursorIndex].accountId, "aa" + "0".repeat(30))
+        }
     }
 }
