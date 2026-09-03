@@ -11,6 +11,13 @@ function createState() {
     return { mode: "list", cursorIndex: 0 }
 }
 
+// One owner of the state shape: hover and keys both go through here.
+function setCursor(state, index) {
+    var next = _copyState(state)
+    next.cursorIndex = index
+    return next
+}
+
 // Visual card list across enabled provider sections. Accounts are already
 // in card order in the snapshot; this only filters by provider.
 function cards(snapshot) {

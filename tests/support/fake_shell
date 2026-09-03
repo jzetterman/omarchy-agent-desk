@@ -9,9 +9,6 @@ if [[ "${1:-}" == "-lic" ]]; then
   printf 'fastfetch banner\n'
   export PATH="$FAKE_CLI:/usr/bin:/bin"
   unset CLAUDE_CONFIG_DIR CODEX_HOME GROK_HOME
-  # Probe scripts run under set -u; keep eval from dying on unset home vars
-  # when a caller interpolates them unquoted.
-  set +u
   eval "$2"
   exit 0
 fi

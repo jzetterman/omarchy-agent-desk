@@ -39,9 +39,13 @@ CursorSurface {
         "expired": "Sign-in expired",
         "rate-limited": "Rate limited",
         "offline": "Offline",
-        "failed": "Failed",
-        "no-limits": "No limits reported"
+        "failed": "Failed"
     })
+    readonly property bool statusStripHasAge: {
+        var s = root.status
+        return (s === "rate-limited" || s === "offline" || s === "failed")
+            && !!(root.record && root.record.fetchedAt)
+    }
 
     onWindowsChanged: syncRailIds()
     Component.onCompleted: syncRailIds()
@@ -63,7 +67,7 @@ CursorSurface {
     }
 
     implicitHeight: stack.implicitHeight + Style.spacing.rowPaddingX
-    implicitWidth: Style.space(200)
+    implicitWidth: parent ? parent.width : 0
 
     MouseArea {
         anchors.fill: parent
@@ -149,12 +153,23 @@ CursorSurface {
 
         Text {
             width: parent.width
-            visible: root.stale
+            visible: root.stale && !root.statusStripHasAge
             text: Format.plain("stale" + (root.record && root.record.fetchedAt ? (" · " + Format.ago(root.record.fetchedAt, root.nowMs)) : ""))
             textFormat: Text.PlainText
             color: Qt.darker(root.foreground, 1.4)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
+        }
+
+        Text {
+            width: parent.width
+            visible: root.status === "no-limits"
+            text: Format.plain(String((root.record && root.record.help) || ""))
+            textFormat: Text.PlainText
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
         }
 
         Column {

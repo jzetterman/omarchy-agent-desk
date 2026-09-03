@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -11,12 +12,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from agentdesk.runner import Runner, merge_record  # noqa: E402
+from agentdesk.runner import IMPORT_PLACEHOLDER_NAME, Runner, merge_record  # noqa: E402
 from support.fake_clock import FakeClock  # noqa: E402
 from support.homes import NOW, config_dir, fixture_home, state_dir  # noqa: E402
 
@@ -562,13 +564,119 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(runner.start(), 0)
             self._wait_probe(runner)
             acct = [a for a in runner.state["accounts"] if a.get("provider") == "claude"][0]
-            self.assertEqual(acct["name"], "default")
-            runner.records[acct["id"]] = {"identity": {"email": "me@example.com", "org": "Org"}}
-            shown = [a for a in runner.snapshot_event()["state"]["accounts"] if a["id"] == acct["id"]][0]
+            self.assertEqual(acct["name"], IMPORT_PLACEHOLDER_NAME)
+            runner.records[acct["id"]] = {
+                "identity": {"email": "me@example.com", "org": "Org"},
+                "windows": [{
+                    "id": "session", "kind": "session", "label": "Session",
+                    "used": 0.4, "resetsAt": None,
+                }],
+                "fetchedAt": "2023-11-14T13:46:40Z",
+            }
+            snap = runner.snapshot_event()
+            shown = [a for a in snap["state"]["accounts"] if a["id"] == acct["id"]][0]
             self.assertEqual(shown["name"], "me@example.com")
+            self.assertEqual(snap["readout"]["top"]["accountName"], "me@example.com")
             acct["name"] = "work"
             shown = [a for a in runner.snapshot_event()["state"]["accounts"] if a["id"] == acct["id"]][0]
             self.assertEqual(shown["name"], "work")
+            runner.shutdown_workers()
+
+    def test_sync_schedule_keeps_inflight_when_disabled(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, SLEEPING_COLLECTOR)
+            clock = FakeClock(now=NOW, monotonic=1000.0)
+            runner = make_runner(
+                plugin, clock=clock, collector_timeout_sec=2.0, floor_sec=0.0, interval_sec=900.0,
+            )
+            aid = "i" * 32
+            slow_home = str(home / "slow")
+            Path(slow_home).mkdir()
+            runner.state["accounts"] = [account(aid, slow_home)]
+            runner.state["active"] = {"claude": aid}
+            runner._sync_schedule()
+            runner.scheduler.force(aid)
+            runner.tick()
+            self.assertTrue(runner.scheduler.entries[aid]["inflight"])
+            deadline = time.time() + 1.0
+            proc = None
+            while time.time() < deadline:
+                proc = runner.scheduler.entries[aid].get("proc")
+                if proc is not None:
+                    break
+                time.sleep(0.02)
+            self.assertIsNotNone(proc)
+            runner.handle_command({"cmd": "settings", "providerEnabled": {"claude": False}})
+            self.assertIn(aid, runner.scheduler.entries)
+            self.assertTrue(runner.scheduler.entries[aid]["inflight"])
+            self.assertIs(runner.scheduler.entries[aid]["proc"], proc)
+            starts = runner.scheduler.entries[aid]["lastStartMono"]
+            runner.handle_command({"cmd": "settings", "providerEnabled": {"claude": True}})
+            self.assertEqual(runner.scheduler.entries[aid]["lastStartMono"], starts)
+            self.assertTrue(runner.scheduler.entries[aid]["inflight"])
+            runner.shutdown_workers()
+            self.assertIsNotNone(proc.poll())
+
+    def test_probe_unchanged_does_not_mark_dirty(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin)
+            runner.path = "/same/path"
+            runner.path_probe = "ok"
+            runner.probe_envs = {"CLAUDE_CONFIG_DIR": ""}
+            runner._dirty = False
+            body = b"\n__AGENT_DESK__/same/path__AGENT_DESK__\n\n__AGENT_DESK____AGENT_DESK__\n"
+            runner._handle_probe({"type": "probe", "timed_out": False, "code": 0, "stdout": body})
+            self.assertFalse(runner._dirty)
+            runner.path = "/old/path"
+            runner._handle_probe({"type": "probe", "timed_out": False, "code": 0, "stdout": body})
+            self.assertTrue(runner._dirty)
+            runner.shutdown_workers()
+
+    def test_write_and_publish_oserror_keeps_serving(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin)
+            aid = "j" * 32
+            runner.state["accounts"] = [account(aid, str(home / ".claude"))]
+            rec = {"status": "ok", "provider": "claude", "help": ""}
+            real_open = os.open
+
+            def deny_record(path, flags, *args):
+                text = str(path)
+                if text.endswith(".json") or text.endswith(".json.tmp"):
+                    raise OSError("denied")
+                return real_open(path, flags, *args)
+
+            with patch("os.open", deny_record):
+                runner._write_record(aid, rec)
+            snap = runner.snapshot_event()
+            self.assertEqual(snap["error"], "record-write-failed")
+            log = (state_dir(home) / "runner.log").read_text(encoding="utf-8")
+            self.assertIn("record write failed", log)
+            self.assertNotIn(str(state_dir(home)), log)
+            self.assertNotIn(str(home / ".claude"), log)
+            with patch("agentdesk.state.os.open", side_effect=OSError("denied")):
+                runner._publish()
+            snap = runner.snapshot_event()
+            self.assertEqual(snap["error"], "state-write-failed")
+            events = runner.handle_command({"cmd": "snapshot"})
+            self.assertEqual(events[0]["event"], "snapshot")
+            runner.shutdown_workers()
+
+    def test_start_creates_state_and_records_dirs(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            sd = state_dir(home)
+            shutil.rmtree(sd)
+            self.assertFalse(sd.exists())
+            runner = make_runner(plugin)
+            self.assertEqual(runner.start(), 0)
+            rec = sd / "records"
+            self.assertTrue(sd.is_dir())
+            self.assertTrue(rec.is_dir())
+            self.assertEqual(stat.S_IMODE(sd.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(rec.stat().st_mode), 0o700)
             runner.shutdown_workers()
 
     def test_probe_single_flight(self):

@@ -13,10 +13,9 @@ import sys
 import threading
 import uuid
 from collections import deque
-from datetime import datetime, timezone
 from pathlib import Path
 
-from agentdesk.clock import Clock
+from agentdesk.clock import Clock, iso
 from agentdesk.descriptor import load_all
 from agentdesk.paths import config_dir, ensure_dir, isolated_home, state_dir
 from agentdesk.record import KIND_ORDER, kind_rank, normalize, normalize_email
@@ -27,6 +26,7 @@ KEEP_ON_FAILURE = ("identity", "windows", "balance", "fetchedAt")
 REPLACE_STATUSES = {"ok", "no-limits", "not-signed-in", "not-installed"}
 BACKOFF_STATUSES = {"rate-limited", "offline", "failed"}
 OPEN_NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
+IMPORT_PLACEHOLDER_NAME = "default"
 
 
 def merge_record(old: dict | None, new: dict) -> dict:
@@ -124,7 +124,11 @@ def compute_readout(accounts, records, active, providers, provider_order, scope,
 
 
 class Scheduler:
-    """Per-account due times, single-flight, backoff, and collector spawn."""
+    """Per-account due times, single-flight, backoff, and collector spawn.
+
+    A hold flag arrives with Phase 4 (login/removal). Until then an inflight
+    entry is the only thing that blocks a new spawn.
+    """
 
     def __init__(self, clock: Clock, interval_sec: float, floor_sec: float):
         self.clock = clock
@@ -141,7 +145,6 @@ class Scheduler:
                 "lastStartMono": None,
                 "backoffMultiplier": 1,
                 "inflight": False,
-                "held": False,
                 "generation": generation,
                 "proc": None,
             }
@@ -175,7 +178,7 @@ class Scheduler:
         now = self.clock.monotonic()
         due = []
         for aid, entry in self.entries.items():
-            if entry["inflight"] or entry["held"]:
+            if entry["inflight"]:
                 continue
             if manual_ids is not None:
                 if aid not in manual_ids:
@@ -191,7 +194,7 @@ class Scheduler:
         now = self.clock.monotonic()
         waits = []
         for entry in self.entries.values():
-            if entry["inflight"] or entry["held"]:
+            if entry["inflight"]:
                 continue
             waits.append(max(0.0, entry["nextDueMono"] - now))
         if not waits:
@@ -280,11 +283,22 @@ class Runner:
         self._dirty = False
         self._probe_inflight = False
         self._probe_proc = None
+        self.persist_error = None
         self.python_bin = shutil.which("python3") or sys.executable
         self.terminal_bin = shutil.which("omarchy-launch-terminal")
 
     def _now_iso(self) -> str:
-        return datetime.fromtimestamp(self.clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return iso(self.clock.now())
+
+    def _display_name(self, acct: dict) -> str:
+        """Imported placeholder name yields the identity email when known."""
+        name = str(acct.get("name") or "")
+        if acct.get("kind") == "imported" and name == IMPORT_PLACEHOLDER_NAME:
+            rec = self.records.get(acct["id"]) or {}
+            email = str(((rec.get("identity") or {}).get("email")) or "")
+            if email:
+                return email
+        return name
 
     def _mark_dirty(self) -> None:
         self._dirty = True
@@ -299,8 +313,12 @@ class Runner:
             live.add(acct["id"])
             self.scheduler.ensure(acct["id"], acct.get("generation") or 1)
         for aid in list(self.scheduler.entries):
-            if aid not in live:
-                self.scheduler.drop(aid)
+            if aid in live:
+                continue
+            entry = self.scheduler.entries[aid]
+            if entry.get("inflight"):
+                continue
+            self.scheduler.drop(aid)
 
     def _provider_enabled(self, pid: str) -> bool:
         value = self.provider_enabled.get(pid)
@@ -335,21 +353,32 @@ class Runner:
         if not acct:
             return
         path = self.state_dir / "records" / acct["provider"] / f"{account_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self._log("record write failed")
+            self.persist_error = "record-write-failed"
+            return
         try:
             os.chmod(path.parent, 0o700)
         except OSError:
             pass
         payload = (json.dumps(rec) + "\n").encode()
         tmp = path.with_name(path.name + ".tmp")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | OPEN_NOFOLLOW, 0o600)
         try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, payload)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(tmp, path)
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | OPEN_NOFOLLOW, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                os.write(fd, payload)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+            if self.persist_error == "record-write-failed":
+                self.persist_error = None
+        except OSError:
+            self._log("record write failed")
+            self.persist_error = "record-write-failed"
 
     def _account(self, account_id: str):
         for acct in self.state.get("accounts") or []:
@@ -405,6 +434,8 @@ class Runner:
         code = self.take_lock()
         if code:
             return code
+        ensure_dir(self.state_dir)
+        ensure_dir(self.state_dir / "records")
         self._truncate_log()
         if self.state_error:
             return 0
@@ -463,7 +494,7 @@ class Runner:
             "id": aid,
             "provider": desc["id"],
             "kind": "imported",
-            "name": "default",
+            "name": IMPORT_PLACEHOLDER_NAME,
             "home": home,
             "homeFromEnv": home_from_env,
             "createdAt": now,
@@ -477,7 +508,13 @@ class Runner:
     def _publish(self) -> None:
         if self.state_error:
             return
-        self.state = bump_and_publish(self.config_dir / "state.json", self.state)
+        try:
+            self.state = bump_and_publish(self.config_dir / "state.json", self.state)
+            if self.persist_error == "state-write-failed":
+                self.persist_error = None
+        except OSError:
+            self._log("state write failed")
+            self.persist_error = "state-write-failed"
 
     def _minimal_env(self) -> dict:
         env = {
@@ -588,7 +625,7 @@ class Runner:
 
     def _spawn_collector(self, account_id: str) -> None:
         entry = self.scheduler.entries.get(account_id)
-        if entry is None or entry["inflight"] or entry["held"]:
+        if entry is None or entry["inflight"]:
             return
         acct = self._account(account_id)
         if not acct:
@@ -642,14 +679,21 @@ class Runner:
             elif item.get("type") == "collector":
                 self._handle_collector(item)
 
+    def _probe_changed(self, old_path, old_probe, old_envs) -> bool:
+        return self.path != old_path or self.path_probe != old_probe or self.probe_envs != old_envs
+
     def _handle_probe(self, item: dict) -> None:
         self._probe_inflight = False
         self._probe_proc = None
-        self._mark_dirty()
+        old_path = self.path
+        old_probe = self.path_probe
+        old_envs = dict(self.probe_envs)
         if item.get("timed_out") or item.get("code") not in (0, None):
             self.path_probe = "fallback"
             self.path = self.fallback
             self._log("probe fallback")
+            if self._probe_changed(old_path, old_probe, old_envs):
+                self._mark_dirty()
             self.detect_and_import()
             return
         text = (item.get("stdout") or b"").decode("utf-8", errors="replace")
@@ -657,6 +701,8 @@ class Runner:
         if not values:
             self.path_probe = "fallback"
             self.path = self.fallback
+            if self._probe_changed(old_path, old_probe, old_envs):
+                self._mark_dirty()
             self.detect_and_import()
             return
         self.path = values[0] or self.fallback
@@ -665,6 +711,8 @@ class Runner:
         for i, name in enumerate(envs):
             self.probe_envs[name] = values[i + 1] if i + 1 < len(values) else ""
         self.path_probe = "ok"
+        if self._probe_changed(old_path, old_probe, old_envs):
+            self._mark_dirty()
         self.detect_and_import()
 
     def _handle_collector(self, item: dict) -> None:
@@ -938,6 +986,7 @@ class Runner:
         accounts_out = []
         for acct in accounts_src:
             item = dict(acct)
+            item["name"] = self._display_name(acct)
             if acct.get("kind") == "isolated":
                 try:
                     item["homePath"] = str(isolated_home(acct["provider"], acct["id"], home=str(self.home)))
@@ -945,13 +994,6 @@ class Runner:
                     item["homePath"] = ""
             else:
                 item["homePath"] = acct.get("home")
-            # R21: an imported account still carrying the import placeholder
-            # name is shown by its email once identity is known.
-            if acct.get("kind") == "imported" and acct.get("name") == "default":
-                rec = self.records.get(acct["id"]) or {}
-                email = str(((rec.get("identity") or {}).get("email")) or "")
-                if email:
-                    item["name"] = email
             accounts_out.append(item)
         records_out = {}
         for aid, rec in self.records.items():
@@ -962,7 +1004,7 @@ class Runner:
         state_out = dict(self.state)
         state_out["accounts"] = accounts_out
         readout = compute_readout(
-            accounts_src,
+            accounts_out,
             self.records,
             self.state.get("active") or {},
             providers,
@@ -981,7 +1023,7 @@ class Runner:
             "pathProbe": self.path_probe,
             "login": None,
             "providerErrors": self.provider_errors,
-            "error": self.state_error,
+            "error": self.state_error or self.persist_error,
             "generation": self.state.get("generation") or 0,
         }
 
@@ -995,7 +1037,7 @@ class Runner:
             other_rec = self.records.get(other["id"]) or {}
             other_email = normalize_email((other_rec.get("identity") or {}).get("email"))
             if other_email and other_email == email:
-                return {"id": other["id"], "name": other.get("name") or ""}
+                return {"id": other["id"], "name": self._display_name(other)}
         return None
 
     def shutdown_workers(self) -> None:

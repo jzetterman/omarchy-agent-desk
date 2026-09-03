@@ -53,7 +53,7 @@ class ManifestTests(unittest.TestCase):
     def test_bar_widget_default_section(self):
         bar = self.doc.get("barWidget")
         if not isinstance(bar, dict) or "defaultSection" not in bar:
-            return
+            self.skipTest("barWidget.defaultSection is absent")
         section = bar["defaultSection"]
         self.assertIsInstance(section, str)
         self.assertIn(section, ("left", "center", "right"))

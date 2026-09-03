@@ -81,6 +81,15 @@ Item {
             compare(moved.state.cursorIndex, 1)
         }
 
+        function test_set_cursor_owns_shape() {
+            var state = Keys.createState()
+            var next = Keys.setCursor(state, 3)
+            compare(next.cursorIndex, 3)
+            compare(next.mode, "list")
+            verify(next !== state)
+            compare(state.cursorIndex, 0)
+        }
+
         function test_cards_filter_only_no_sort() {
             var snap = sampleSnapshot()
             snap.state.accounts = [

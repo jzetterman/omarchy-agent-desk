@@ -21,11 +21,13 @@ Item {
         if (window) return Number(window.used || 0)
         return 0
     }
-    readonly property bool alarming: used >= 0.9
+    // Bar colouring is the runner's; this local tint is the rail's last-10% alarm.
+    readonly property real alarmAt: 0.9
+    readonly property bool alarming: used >= alarmAt
     readonly property real thickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
 
     implicitHeight: labelRow.implicitHeight + thickness + caption.implicitHeight + Style.space(8)
-    implicitWidth: Style.space(200)
+    implicitWidth: parent ? parent.width : 0
 
     Item {
         id: labelRow

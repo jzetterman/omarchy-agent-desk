@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
+
+
+def iso(ts: float) -> str:
+    """UTC timestamp as YYYY-MM-DDTHH:MM:SSZ."""
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Clock:

@@ -9,6 +9,5 @@ rsync -a --delete \
   --exclude '.git/' \
   --exclude 'docs/' \
   --exclude 'tests/' \
-  --exclude 'PHASE1-REPORT.md' \
   "$ROOT/" "$DEST/"
 echo "synced $ROOT -> $DEST"

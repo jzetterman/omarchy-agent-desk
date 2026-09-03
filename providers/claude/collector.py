@@ -17,7 +17,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from agentdesk.clock import Clock
+from agentdesk.clock import Clock, iso
 from agentdesk.descriptor import load_one
 from agentdesk.http import Http
 from agentdesk.record import normalize
@@ -32,7 +32,7 @@ USAGE_HEADERS_EXTRA = {
 
 # UTC timestamp for collectedAt, from the injectable clock.
 def iso_from_clock(clock: Clock) -> str:
-    return datetime.fromtimestamp(clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return iso(clock.now())
 
 
 # Display plan from rateLimitTier (Max Nx) or subscriptionType.
@@ -47,8 +47,9 @@ def plan_label(tier: str, subscription: str) -> str:
 
 
 # Read a regular file as JSON without following a symlink (plan C.5).
+# O_NONBLOCK so a FIFO cannot stall the collector; fstat still rejects it.
 def read_json(path: Path) -> dict | None:
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NOCTTY | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NOCTTY | os.O_CLOEXEC | os.O_NONBLOCK
     try:
         fd = os.open(str(path), flags)
     except OSError:
@@ -168,11 +169,11 @@ def normalize_reset_at(value) -> str | None:
         if ts < 1e12:
             ts *= 1000
         try:
-            return datetime.fromtimestamp(ts / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return iso(ts / 1000)
         except (OverflowError, OSError, ValueError):
             return raw
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return iso(datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp())
     except ValueError:
         return raw
 

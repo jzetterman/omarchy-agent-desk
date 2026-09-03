@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -257,6 +259,16 @@ class CollectorClaudeTests(unittest.TestCase):
         session = next(w for w in rec["windows"] if w["kind"] == "session")
         self.assertEqual(session["used"], 0.0)
 
+    def test_read_json_fifo_does_not_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fifo.json"
+            os.mkfifo(path)
+            start = time.monotonic()
+            rec = self.mod.read_json(path)
+            elapsed = time.monotonic() - start
+        self.assertIsNone(rec)
+        self.assertLess(elapsed, 0.5)
+
     def test_build_http_and_clock_ignore_env_without_test(self):
         old_now = os.environ.get("AGENT_DESK_NOW")
         old_ca = os.environ.get("AGENT_DESK_CA_FILE")
@@ -266,8 +278,8 @@ class CollectorClaudeTests(unittest.TestCase):
             http = self.mod.build_http(False)
             clock = self.mod.build_clock(False)
             self.assertIsNone(http.cafile)
-            self.assertIsInstance(clock, Clock)
-            self.assertNotIsInstance(clock, FakeClock)
+            self.assertIs(type(clock), Clock)
+            self.assertGreater(clock.now(), 1.7e9)
         finally:
             if old_now is None:
                 os.environ.pop("AGENT_DESK_NOW", None)

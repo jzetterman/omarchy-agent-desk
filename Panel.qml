@@ -30,6 +30,7 @@ Panel {
     property var accountIdsByProvider: ({})
 
     readonly property var validated: {
+        // Binding dependency: reading settings here re-runs when the shell updates it.
         var _s = settings
         return validatedSettings()
     }
@@ -147,26 +148,9 @@ Panel {
         return path ? Util.fileUrl(path) : ""
     }
 
-    // Providers in the setting order, then leftover ids sorted.
+    // Runner already orders by providerOrder; Keys.cards trusts that order.
     function orderedProviders() {
-        var list = (snap && snap.providers) ? snap.providers.slice() : []
-        var order = validated.providerOrder
-        var out = []
-        var seen = {}
-        for (var i = 0; i < order.length; i++) {
-            for (var j = 0; j < list.length; j++) {
-                if (list[j].id === order[i] && !seen[list[j].id]) {
-                    out.push(list[j])
-                    seen[list[j].id] = true
-                }
-            }
-        }
-        var rest = []
-        for (var k = 0; k < list.length; k++) {
-            if (!seen[list[k].id]) rest.push(list[k])
-        }
-        rest.sort(function(a, b) { return String(a.id).localeCompare(String(b.id)) })
-        return out.concat(rest)
+        return (snap && snap.providers) ? snap.providers : []
     }
 
     // Filter snapshot accounts by provider. Card order is already in the snapshot.
@@ -212,11 +196,22 @@ Panel {
             accountIdsByProvider = map
     }
 
-    // Flat visual index of a card, matching Keys.cards.
+    // Flat visual index of a card, matching Keys.cards, from the keyed models.
     function visualIndex(providerId, accountId) {
-        var list = Keys.cards(snap)
-        for (var i = 0; i < list.length; i++) {
-            if (list[i].providerId === providerId && list[i].accountId === accountId) return i
+        var idx = 0
+        for (var i = 0; i < providerIds.length; i++) {
+            var pid = providerIds[i]
+            var p = providerById(pid)
+            if (!p || p.enabled === false) continue
+            var aids = accountIdsByProvider[pid] || []
+            for (var j = 0; j < aids.length; j++) {
+                if (pid === providerId && aids[j] === accountId) return idx
+                idx++
+            }
+            if (aids.length === 0) {
+                if (pid === providerId && (accountId === null || accountId === undefined)) return idx
+                idx++
+            }
         }
         return -1
     }
@@ -440,11 +435,15 @@ Panel {
                                 font.bold: true
                             }
                             Image {
-                                width: Style.space(14)
-                                height: Style.space(14)
+                                // Cap height of the title words; popup mark at full opacity.
+                                width: Style.font.title
+                                height: Style.font.title
                                 anchors.verticalCenter: parent.verticalCenter
                                 source: root.popupMarkSource()
                                 fillMode: Image.PreserveAspectFit
+                                sourceSize.width: Style.font.title * 2
+                                sourceSize.height: Style.font.title * 2
+                                opacity: 1
                             }
                             Text {
                                 text: "Desk"
@@ -530,7 +529,9 @@ Panel {
 
                             Item {
                                 width: parent.width
-                                implicitHeight: Math.max(mark.implicitHeight, header.implicitHeight, planLabel.implicitHeight)
+                                // Pin to the type scale. Image.implicitHeight is the SVG
+                                // natural size (256) and would leave two card-tall gaps.
+                                height: Math.max(Style.space(12), Style.font.caption * 2)
 
                                 Row {
                                     id: headerRow
@@ -538,13 +539,18 @@ Panel {
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: Style.space(8)
 
-                                    Image {
-                                        id: mark
+                                    Item {
                                         width: Style.space(12)
                                         height: Style.space(12)
                                         anchors.verticalCenter: parent.verticalCenter
-                                        source: root.sectionMarkSource(section.provider)
-                                        fillMode: Image.PreserveAspectFit
+                                        Image {
+                                            id: mark
+                                            anchors.fill: parent
+                                            sourceSize.width: Style.space(12)
+                                            sourceSize.height: Style.space(12)
+                                            source: root.sectionMarkSource(section.provider)
+                                            fillMode: Image.PreserveAspectFit
+                                        }
                                     }
                                     PanelSectionHeader {
                                         id: header
@@ -618,7 +624,7 @@ Panel {
                                     onActivated: desk.send({ cmd: "set-active", accountId: modelData })
                                     onHoveredCard: function(idx) {
                                         root.cursorActive = true
-                                        root.keyState = { mode: root.keyState.mode, cursorIndex: idx }
+                                        root.keyState = Keys.setCursor(root.keyState, idx)
                                     }
                                 }
                             }
@@ -633,12 +639,14 @@ Panel {
                     Text {
                         width: parent.width
                         visible: {
-                            var list = root.orderedProviders()
-                            if (list.length === 0) return true
-                            for (var i = 0; i < list.length; i++) if (list[i].enabled !== false) return false
+                            if (root.providerIds.length === 0) return true
+                            for (var i = 0; i < root.providerIds.length; i++) {
+                                var p = root.providerById(root.providerIds[i])
+                                if (p && p.enabled !== false) return false
+                            }
                             return true
                         }
-                        text: "Enable a provider: omarchy bar set io.github.jzetterman.agent-desk providerEnabled"
+                        text: "Enable a provider: omarchy bar set io.github.jzetterman.agent-desk providerEnabled '{\"claude\": true}'"
                         textFormat: Text.PlainText
                         wrapMode: Text.WordWrap
                         color: Qt.darker(root.foreground, 1.4)
