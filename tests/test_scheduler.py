@@ -580,6 +580,15 @@ class SchedulerTests(unittest.TestCase):
             acct["name"] = "work"
             shown = [a for a in runner.snapshot_event()["state"]["accounts"] if a["id"] == acct["id"]][0]
             self.assertEqual(shown["name"], "work")
+            # sameAccountAs names the other account by its display name (email
+            # for an imported placeholder), never the raw placeholder.
+            acct["name"] = "default"
+            twin = dict(acct, id="twin-id", name="default")
+            runner.state["accounts"].append(twin)
+            runner.records["twin-id"] = {"identity": {"email": "me@example.com", "org": "Org"}}
+            recs = runner.snapshot_event()["records"]
+            entry = recs[acct["id"]] if isinstance(recs, dict) else [r for r in recs if r.get("accountId") == acct["id"]][0]
+            self.assertEqual(entry["sameAccountAs"]["name"], "me@example.com")
             runner.shutdown_workers()
 
     def test_sync_schedule_keeps_inflight_when_disabled(self):

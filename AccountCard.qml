@@ -261,8 +261,7 @@ CursorSurface {
                 readonly property string statusText: {
                     var label = root.statusLabels[root.status] || ""
                     if (!label) return ""
-                    if ((root.status === "rate-limited" || root.status === "offline" || root.status === "failed")
-                            && root.record && root.record.fetchedAt)
+                    if (root.statusStripHasAge)
                         return label + " · " + Format.ago(root.record.fetchedAt, root.nowMs)
                     return label
                 }

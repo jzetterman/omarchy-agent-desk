@@ -494,7 +494,9 @@ Panel {
 
                     BorderSurface {
                         width: parent.width
+                        // Runner-level trouble: stopped, locked out, or unable to persist.
                         visible: root.snap.error === "runner-stopped" || root.snap.error === "runner-locked"
+                            || root.snap.error === "record-write-failed" || root.snap.error === "state-write-failed"
                         color: Util.alpha(root.urgent, 0.10)
                         borderSpec: Border.flat(Util.alpha(root.urgent, 0.35), 1)
                         implicitHeight: runnerText.implicitHeight + Style.space(16)
@@ -504,7 +506,9 @@ Panel {
                             anchors.margins: Style.space(8)
                             text: root.snap.error === "runner-locked"
                                 ? "Another runner holds runner.lock"
-                                : "Runner stopped · see runner.log"
+                                : root.snap.error === "runner-stopped"
+                                    ? "Runner stopped · see runner.log"
+                                    : "Cannot write records or state · see runner.log"
                             textFormat: Text.PlainText
                             wrapMode: Text.WordWrap
                             color: root.foreground
