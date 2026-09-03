@@ -404,3 +404,8 @@ Done when: A5 and A12a pass, M4 passes, README routing section merged.
 | plan | codex-review (Fable substitute) | 2 (full) | 12 (1 P1, 2 P2, 9 P3) | 12 | 0 open |
 | plan | codex-review (Fable substitute) | 3 (delta) | 6 (0 P1, 2 P2, 4 P3) | 6 | 0 open |
 | plan | codex-review (Fable substitute) | 4 (delta) | 4 nits | 4 | 0 open — stage clean; plan gate closed 2026-09-03 |
+| diff (Phase 1) | claude-review | 1 (full, 6 lenses) | 5 blocker / ~21 should-fix / ~20 nit | all (fix round 1, grok-4.6) | 0 open |
+| diff (Phase 1) | claude-review | 2 (delta, 6 lenses) | 1 regression / 6 should-fix / ~15 nit | all (fix round 2, grok-4.6) | 0 open |
+| diff (Phase 1) | claude-review | 3 (delta, 1 reviewer) | 1 low / 3 nit | all (orchestrator) | 0 open — stage closed 2026-09-03 |
+| diff (Phase 1) | grok-review | 1 (unsandboxed, throwaway clone; John-approved) | pending | | |
+| diff (Phase 1) | codex-review (Fable substitute) | 1 | pending | | |
