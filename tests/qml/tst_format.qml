@@ -29,8 +29,10 @@ Item {
 
         function test_percent_half_up() {
             compare(Format.percent(0.749), 75)
+            compare(Format.percent(0.745), 75)
             compare(Format.percent(0.744), 74)
             compare(Format.percent(0.75), 75)
+            compare(Format.percent(0.005), 1)
             compare(Format.percent(0.0), 0)
             compare(Format.percent(1.0), 100)
         }
@@ -69,11 +71,7 @@ Item {
                 fetchedAt: new Date(now - 20 * 60 * 1000).toISOString()
             }
             var text = Format.tooltip(top, now, true)
-            verify(text.indexOf("Agent Desk") >= 0)
-            verify(text.indexOf("Codex") >= 0)
-            verify(text.indexOf("work") >= 0)
-            verify(text.indexOf("81%") >= 0)
-            verify(text.indexOf("stale") >= 0)
+            compare(text, "Agent Desk · Codex · work · weekly 81% · resets in 5d 2h · stale · 20 min ago")
         }
     }
 }

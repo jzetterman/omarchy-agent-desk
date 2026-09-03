@@ -10,6 +10,18 @@ function percent(used) {
     return Math.round(n * 100)
 }
 
+// Largest two units down to minutes. minuteLabel is "m" or " min".
+function twoUnits(totalMin, minuteLabel) {
+    var days = Math.floor(totalMin / (60 * 24))
+    var hours = Math.floor((totalMin % (60 * 24)) / 60)
+    var mins = totalMin % 60
+    var parts = []
+    if (days > 0) parts.push(days + "d")
+    if (hours > 0 && parts.length < 2) parts.push(hours + "h")
+    if (mins > 0 && parts.length < 2) parts.push(mins + minuteLabel)
+    return parts.join(" ")
+}
+
 // Largest two units down to minutes. Under one minute is "1m". Past is "resetting".
 function countdown(resetsAt, nowMs) {
     var t = Date.parse(resetsAt)
@@ -18,33 +30,17 @@ function countdown(resetsAt, nowMs) {
     if (!(ms > 0)) return "resetting"
     var totalMin = Math.floor(ms / 60000)
     if (totalMin < 1) return "1m"
-    var days = Math.floor(totalMin / (60 * 24))
-    var hours = Math.floor((totalMin % (60 * 24)) / 60)
-    var mins = totalMin % 60
-    var parts = []
-    if (days > 0) parts.push(days + "d")
-    if (hours > 0 && parts.length < 2) parts.push(hours + "h")
-    if (mins > 0 && parts.length < 2) parts.push(mins + "m")
-    if (parts.length === 0) return "1m"
-    return parts.join(" ")
+    return twoUnits(totalMin, "m") || "1m"
 }
 
-// Age of a timestamp, same unit rules as countdown.
+// Age of a timestamp, same unit rules as countdown. Minutes read "20 min ago".
 function ago(fetchedAt, nowMs) {
     var t = Date.parse(fetchedAt)
     if (!isFinite(t)) return ""
     var ms = nowMs - t
     if (!(ms > 0)) return "just now"
     var totalMin = Math.max(1, Math.floor(ms / 60000))
-    var days = Math.floor(totalMin / (60 * 24))
-    var hours = Math.floor((totalMin % (60 * 24)) / 60)
-    var mins = totalMin % 60
-    var parts = []
-    if (days > 0) parts.push(days + "d")
-    if (hours > 0 && parts.length < 2) parts.push(hours + "h")
-    if (mins > 0 && parts.length < 2) parts.push(mins + "m")
-    if (parts.length === 0) parts.push("1m")
-    return parts.join(" ") + " ago"
+    return (twoUnits(totalMin, " min") || "1 min") + " ago"
 }
 
 // Local clock time with timezone name, used on rail hover.

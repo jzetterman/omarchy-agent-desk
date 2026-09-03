@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import stat
 import subprocess
 import sys
@@ -17,12 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from agentdesk.clock import FakeClock  # noqa: E402
 from agentdesk.runner import Runner, merge_record  # noqa: E402
-from support.homes import NOW, fixture_home  # noqa: E402
+from support.fake_clock import FakeClock  # noqa: E402
+from support.homes import NOW, config_dir, fixture_home, state_dir  # noqa: E402
 
 SLEEPING_COLLECTOR = r'''
 import json, os, sys, time
+from pathlib import Path
 mode = "full"
 home = ""
 args = sys.argv[1:]
@@ -47,9 +47,13 @@ record = {
     "collectedAt": "2023-11-14T13:46:40Z",
 }
 if slow:
-    if os.fork() == 0:
+    child = os.fork()
+    if child == 0:
         time.sleep(30)
         os._exit(0)
+    Path(home).mkdir(parents=True, exist_ok=True)
+    (Path(home) / "collector.pid").write_text(str(os.getpid()), encoding="utf-8")
+    (Path(home) / "grandchild.pid").write_text(str(child), encoding="utf-8")
     time.sleep(30)
     record["status"] = "ok"
     print(json.dumps(record))
@@ -89,6 +93,22 @@ print(json.dumps({
 }))
 '''
 
+OK_COLLECTOR_HIGH = r'''
+import json, sys
+print(json.dumps({
+    "schemaVersion": 1,
+    "provider": "claude",
+    "mode": "full",
+    "status": "ok",
+    "statusReason": None,
+    "help": "",
+    "identity": {"email": "a@b.c", "org": "", "plan": "Max"},
+    "windows": [{"id": "session", "kind": "session", "label": "Session", "used": 0.9, "resetsAt": None}],
+    "balance": None,
+    "collectedAt": "2023-11-14T13:46:40Z",
+}))
+'''
+
 DESCRIPTOR = {
     "schemaVersion": 1,
     "id": "claude",
@@ -122,7 +142,7 @@ DESCRIPTOR = {
         "clientId": None,
         "clientIdKey": None,
     },
-    "installHint": "Install Claude Code: `mise use -g claude@latest`",
+    "installHint": "Install Claude Code: mise use -g claude@latest",
 }
 
 
@@ -140,10 +160,10 @@ def write_plugin(tmp: Path, collector_src: str) -> Path:
     return plugin
 
 
-def account(aid, home, generation=1):
+def account(aid, home, generation=1, provider="claude"):
     return {
         "id": aid,
-        "provider": "claude",
+        "provider": provider,
         "kind": "imported",
         "name": "default",
         "home": home,
@@ -151,6 +171,21 @@ def account(aid, home, generation=1):
         "createdAt": "2023-11-14T13:46:40Z",
         "generation": generation,
     }
+
+
+def make_runner(plugin, clock=None, **kwargs):
+    kw = dict(
+        plugin_dir=plugin,
+        clock=clock or FakeClock(now=NOW, monotonic=1000.0),
+        collector_timeout_sec=0.2,
+        probe_timeout_sec=0.2,
+        grace_sec=0.2,
+        floor_sec=0.05,
+        interval_sec=1.0,
+        test_mode=True,
+    )
+    kw.update(kwargs)
+    return Runner(**kw)
 
 
 class MergeRecordTests(unittest.TestCase):
@@ -185,17 +220,7 @@ class SchedulerTests(unittest.TestCase):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, FAILING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
-            runner = Runner(
-                plugin_dir=plugin,
-                clock=clock,
-                collector_timeout_sec=0.2,
-                probe_timeout_sec=0.2,
-                grace_sec=0.2,
-                floor_sec=0.05,
-                interval_sec=1.0,
-                test_mode=True,
-                interactive_path=str(ROOT / "tests" / "support" / "fake_cli"),
-            )
+            runner = make_runner(plugin, clock=clock, floor_sec=0.05, interval_sec=1.0)
             aid = "a" * 32
             runner.state["accounts"] = [account(aid, str(home / ".claude"))]
             runner.state["active"] = {"claude": aid}
@@ -232,16 +257,8 @@ class SchedulerTests(unittest.TestCase):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, OK_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
-            runner = Runner(
-                plugin_dir=plugin,
-                clock=clock,
-                collector_timeout_sec=0.2,
-                probe_timeout_sec=0.2,
-                grace_sec=0.2,
-                floor_sec=60.0,
-                interval_sec=900.0,
-                test_mode=True,
-                interactive_path=str(ROOT / "tests" / "support" / "fake_cli"),
+            runner = make_runner(
+                plugin, clock=clock, floor_sec=60.0, interval_sec=900.0,
             )
             aid = "b" * 32
             runner.state["accounts"] = [account(aid, str(home / ".claude"))]
@@ -258,16 +275,8 @@ class SchedulerTests(unittest.TestCase):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, SLEEPING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
-            runner = Runner(
-                plugin_dir=plugin,
-                clock=clock,
-                collector_timeout_sec=2.0,
-                probe_timeout_sec=0.2,
-                grace_sec=0.2,
-                floor_sec=0.0,
-                interval_sec=900.0,
-                test_mode=True,
-                interactive_path=str(ROOT / "tests" / "support" / "fake_cli"),
+            runner = make_runner(
+                plugin, clock=clock, collector_timeout_sec=2.0, floor_sec=0.0, interval_sec=900.0,
             )
             aid = "c" * 32
             slow_home = str(home / "slow")
@@ -287,16 +296,9 @@ class SchedulerTests(unittest.TestCase):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, SLEEPING_COLLECTOR)
             clock = FakeClock(now=NOW, monotonic=1000.0)
-            runner = Runner(
-                plugin_dir=plugin,
-                clock=clock,
-                collector_timeout_sec=0.2,
-                probe_timeout_sec=0.2,
-                grace_sec=0.2,
-                floor_sec=0.0,
-                interval_sec=1.0,
-                test_mode=True,
-                interactive_path=str(ROOT / "tests" / "support" / "fake_cli"),
+            runner = make_runner(
+                plugin, clock=clock, collector_timeout_sec=0.2, grace_sec=0.2,
+                floor_sec=0.0, interval_sec=1.0,
             )
             slow_id = "d" * 32
             fast_id = "e" * 32
@@ -321,6 +323,7 @@ class SchedulerTests(unittest.TestCase):
             runner.scheduler.force(slow_id)
             runner.scheduler.force(fast_id)
             runner.tick()
+            collector_pid, grandchild_pid = self._wait_pids(Path(slow_home))
             self._wait_idle(runner, timeout=2.0)
             self.assertEqual(runner.records[fast_id]["status"], "ok")
             self.assertEqual(runner.records[slow_id]["status"], "failed")
@@ -328,11 +331,132 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(runner.records[slow_id]["fetchedAt"], "2023-11-14T13:00:00Z")
             self.assertEqual(runner.scheduler.entries[slow_id]["backoffMultiplier"], 2)
             self.assertEqual(runner.scheduler.entries[fast_id]["backoffMultiplier"], 1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(collector_pid, 0)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+            runner.shutdown_workers()
+
+    def test_two_collector_results_produce_two_snapshots(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            clock = FakeClock(now=NOW, monotonic=1000.0)
+            runner = make_runner(plugin, clock=clock, floor_sec=0.0, interval_sec=1.0)
+            aid = "f" * 32
+            runner.state["accounts"] = [account(aid, str(home / ".claude"))]
+            runner.state["active"] = {"claude": aid}
+            runner._sync_schedule()
+            snaps = []
+
+            def emit_if_dirty():
+                if getattr(runner, "_dirty", False):
+                    snaps.append(runner.snapshot_event())
+                    runner._dirty = False
+
+            runner.scheduler.force(aid)
+            runner.tick()
+            self._wait_idle(runner)
+            emit_if_dirty()
+            (plugin / "providers" / "claude" / "collector.py").write_text(
+                OK_COLLECTOR_HIGH, encoding="utf-8",
+            )
+            runner.scheduler.force(aid)
+            runner.tick()
+            self._wait_idle(runner)
+            emit_if_dirty()
+            self.assertEqual(len(snaps), 2)
+            first = snaps[0]["records"][aid]["windows"][0]["used"]
+            second = snaps[1]["records"][aid]["windows"][0]["used"]
+            self.assertAlmostEqual(first, 0.2)
+            self.assertAlmostEqual(second, 0.9)
+
+    def test_unknown_provider_does_not_spin(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            clock = FakeClock(now=NOW, monotonic=1000.0)
+            runner = make_runner(plugin, clock=clock, interval_sec=900.0)
+            aid = "c" * 32
+            runner.state["accounts"] = [account(aid, str(home / ".codex"), provider="codex")]
+            runner.state["active"] = {"codex": aid}
+            runner._sync_schedule()
+            self.assertNotIn(aid, runner.scheduler.entries)
+            timeout = runner.scheduler.next_timeout()
+            self.assertTrue(timeout is None or timeout > 0)
+            runner.tick()
+            timeout = runner.scheduler.next_timeout()
+            self.assertTrue(timeout is None or timeout > 0)
+            self.assertFalse(any(e.get("inflight") for e in runner.scheduler.entries.values()))
+
+    def test_settings_interval_makes_never_run_due_now(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            clock = FakeClock(now=NOW, monotonic=0.0)
+            runner = make_runner(plugin, clock=clock, interval_sec=900.0, floor_sec=0.0)
+            aid = "g" * 32
+            runner.state["accounts"] = [account(aid, str(home / ".claude"))]
+            runner._sync_schedule()
+            entry = runner.scheduler.entries[aid]
+            self.assertIsNone(entry["lastStartMono"])
+            runner.handle_command({"cmd": "settings", "refreshIntervalSec": 120})
+            self.assertEqual(runner.scheduler.entries[aid]["nextDueMono"], clock.monotonic())
+            runner.scheduler.note_start(aid)
+            runner.scheduler.note_result(aid, "ok", None)
+            started = runner.scheduler.entries[aid]["lastStartMono"]
+            runner.handle_command({"cmd": "settings", "refreshIntervalSec": 60})
+            expected = started + 60.0 * runner.scheduler.entries[aid]["backoffMultiplier"]
+            self.assertEqual(runner.scheduler.entries[aid]["nextDueMono"], expected)
+
+    def test_path_probe_ok_uses_fake_shell(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin, probe_timeout_sec=2.0)
+            self.assertEqual(runner.start(), 0)
+            self._wait_probe(runner)
+            self.assertEqual(runner.path_probe, "ok")
+            fake_cli = str(ROOT / "tests" / "support" / "fake_cli")
+            self.assertTrue(
+                runner.path.startswith(fake_cli),
+                f"path {runner.path!r} should start with {fake_cli}",
+            )
+            runner.shutdown_workers()
+
+    def test_path_probe_timeout_falls_back(self):
+        with fixture_home("signed-in") as home:
+            hang = home / "hang_shell"
+            hang.write_text("#!/bin/bash\nexec sleep 30\n", encoding="utf-8")
+            hang.chmod(hang.stat().st_mode | stat.S_IEXEC)
+            os.environ["SHELL"] = str(hang)
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin, probe_timeout_sec=0.2, grace_sec=0.2)
+            self.assertEqual(runner.start(), 0)
+            self._wait_probe(runner, timeout=3.0)
+            self.assertEqual(runner.path_probe, "fallback")
+            self.assertEqual(runner.path, runner.fallback)
+            runner.shutdown_workers()
+
+    def test_unreadable_state_leaves_records(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            cfg = config_dir(home)
+            rec_dir = state_dir(home) / "records" / "claude"
+            rec_dir.mkdir(parents=True)
+            rec_path = rec_dir / ("a" * 32 + ".json")
+            rec_path.write_text(json.dumps({"status": "ok", "provider": "claude"}), encoding="utf-8")
+            (cfg / "state.json").write_text("{not json", encoding="utf-8")
+            runner = make_runner(plugin)
+            self.assertEqual(runner.start(), 0)
+            self.assertEqual(runner.state_error, "state-unreadable")
+            self.assertTrue(rec_path.is_file(), "unreadable state must not delete records")
             runner.shutdown_workers()
 
     def test_runner_lock_refuses_second_instance(self):
         with fixture_home("signed-in") as home:
             plugin = write_plugin(home, OK_COLLECTOR)
+            rec_dir = state_dir(home) / "records" / "claude"
+            rec_dir.mkdir(parents=True)
+            rec_path = rec_dir / ("b" * 32 + ".json")
+            rec_path.write_text("{}", encoding="utf-8")
+            (config_dir(home) / "state.json").write_text("{not json", encoding="utf-8")
             env = os.environ.copy()
             env["HOME"] = str(home)
             env["PYTHONPATH"] = str(ROOT)
@@ -344,7 +468,16 @@ class SchedulerTests(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 env=env,
             )
-            time.sleep(0.3)
+            lock_path = config_dir(home) / "runner.lock"
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if lock_path.exists() and proc1.poll() is None:
+                    break
+                time.sleep(0.02)
+            else:
+                proc1.kill()
+                self.fail("runner.lock did not appear")
+            rec_mtime = rec_path.stat().st_mtime_ns
             proc2 = subprocess.Popen(
                 [sys.executable, str(runner_py), "serve", "--test", "--plugin-dir", str(plugin)],
                 stdin=subprocess.PIPE,
@@ -357,6 +490,8 @@ class SchedulerTests(unittest.TestCase):
                 proc2.wait(timeout=2)
                 self.assertEqual(proc2.returncode, 75)
                 self.assertIn(b"another runner holds runner.lock", err)
+                self.assertTrue(rec_path.is_file())
+                self.assertEqual(rec_path.stat().st_mtime_ns, rec_mtime)
             finally:
                 for stream in (proc1.stdin, proc1.stdout, proc1.stderr, proc2.stdin, proc2.stdout, proc2.stderr):
                     if stream:
@@ -367,6 +502,100 @@ class SchedulerTests(unittest.TestCase):
                     proc1.kill()
                     proc1.wait(timeout=2)
 
+    def test_disabled_provider_dropped_from_schedule_and_all_refresh(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin, floor_sec=0.0, interval_sec=900.0)
+            aid = "h" * 32
+            runner.state["accounts"] = [account(aid, str(home / ".claude"))]
+            runner.state["active"] = {"claude": aid}
+            runner._sync_schedule()
+            self.assertIn(aid, runner.scheduler.entries)
+            runner.handle_command({"cmd": "settings", "providerEnabled": {"claude": False}})
+            self.assertNotIn(aid, runner.scheduler.entries)
+            runner.handle_command({"cmd": "refresh", "accountId": "all", "manual": True})
+            self.assertNotIn(aid, runner.scheduler.entries)
+            self.assertFalse(any(e.get("inflight") for e in runner.scheduler.entries.values()))
+            runner.shutdown_workers()
+
+    def test_cli_appearing_later_imports_on_tick(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin)
+            runner.path_probe = "ok"
+            empty_bin = home / "empty-bin"
+            empty_bin.mkdir()
+            runner.path = str(empty_bin)
+            runner.detect_and_import()
+            self.assertEqual(runner.state["accounts"], [])
+            cli_dir = home / "later-bin"
+            cli_dir.mkdir()
+            claude = cli_dir / "claude"
+            claude.write_text("#!/bin/bash\necho claude\n", encoding="utf-8")
+            claude.chmod(claude.stat().st_mode | stat.S_IEXEC)
+            runner.path = str(cli_dir)
+            runner.tick()
+            accounts = runner.state["accounts"]
+            self.assertEqual(len(accounts), 1)
+            self.assertEqual(accounts[0]["provider"], "claude")
+            self.assertEqual(accounts[0]["kind"], "imported")
+            runner.shutdown_workers()
+
+    def test_import_on_install_creates_imported_claude(self):
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin, probe_timeout_sec=2.0)
+            self.assertEqual(runner.state["accounts"], [])
+            self.assertEqual(runner.start(), 0)
+            self._wait_probe(runner)
+            accounts = [a for a in runner.state["accounts"] if a.get("provider") == "claude"]
+            self.assertEqual(len(accounts), 1)
+            self.assertEqual(accounts[0]["kind"], "imported")
+            runner.shutdown_workers()
+
+    def test_probe_single_flight(self):
+        with fixture_home("signed-in") as home:
+            hang = home / "hang_shell"
+            hang.write_text("#!/bin/bash\nexec sleep 30\n", encoding="utf-8")
+            hang.chmod(hang.stat().st_mode | stat.S_IEXEC)
+            os.environ["SHELL"] = str(hang)
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin, probe_timeout_sec=2.0, grace_sec=0.2)
+            runner._submit_probe()
+            runner._submit_probe()
+            runner._submit_probe()
+            self.assertEqual(getattr(runner, "_probe_inflight", None), True)
+            probe_threads = [t for t in runner.threads if t.is_alive()]
+            self.assertEqual(len(probe_threads), 1)
+            runner.shutdown_workers()
+            proc = getattr(runner, "_probe_proc", None)
+            if proc is not None:
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1)
+                self.assertIsNotNone(proc.poll())
+
+    def _wait_pids(self, slow_home: Path, timeout=1.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            cpath = slow_home / "collector.pid"
+            gpath = slow_home / "grandchild.pid"
+            if cpath.is_file() and gpath.is_file():
+                return int(cpath.read_text()), int(gpath.read_text())
+            time.sleep(0.02)
+        self.fail("collector/grandchild pid files did not appear")
+
+    def _wait_probe(self, runner, timeout=2.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            runner.tick()
+            if runner.path_probe != "pending":
+                return
+            time.sleep(0.02)
+        self.fail("path probe still pending after %.1fs" % timeout)
+
     def _wait_idle(self, runner, timeout=1.0):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -375,6 +604,7 @@ class SchedulerTests(unittest.TestCase):
                 return
             time.sleep(0.02)
         runner.tick()
+        self.fail("workers still inflight after %.1fs" % timeout)
 
 
 if __name__ == "__main__":

@@ -23,15 +23,17 @@ class HttpPolicyTests(unittest.TestCase):
         self.assertIsNone(result.body)
 
     def test_redirect_refused_no_second_request(self):
-        routes = {
-            ("GET", "/usage"): (302, {"Location": "https://example.invalid/next"}, b"", 0),
-        }
-        with FixtureServer(routes) as server:
-            http = Http(cafile=str(CERT))
-            result = http.get(server.origin + "/usage")
-            self.assertEqual(result.outcome, "failed")
-            self.assertEqual(len(server.requests), 1)
-            self.assertEqual(server.requests[0]["path"], "/usage")
+        for code in (301, 302, 307, 308):
+            with self.subTest(code=code):
+                routes = {
+                    ("GET", "/usage"): (code, {"Location": "https://example.invalid/next"}, b"", 0),
+                }
+                with FixtureServer(routes) as server:
+                    http = Http(cafile=str(CERT))
+                    result = http.get(server.origin + "/usage")
+                    self.assertEqual(result.outcome, "failed")
+                    self.assertEqual(len(server.requests), 1)
+                    self.assertEqual(server.requests[0]["path"], "/usage")
 
     def test_tls_default_rejects_untrusted_cert(self):
         routes = {("GET", "/usage"): (200, {"Content-Type": "application/json"}, b"{}", 0)}
@@ -39,6 +41,7 @@ class HttpPolicyTests(unittest.TestCase):
             http = Http()
             result = http.get(server.origin + "/usage")
             self.assertEqual(result.outcome, "failed")
+            self.assertEqual(result.error, "tls")
 
     def test_tls_with_cafile_succeeds(self):
         body = json.dumps({"ok": True}).encode()

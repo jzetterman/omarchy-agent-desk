@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -11,9 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from agentdesk.clock import FakeClock  # noqa: E402
+from agentdesk.clock import Clock  # noqa: E402
 from agentdesk.descriptor import load_all  # noqa: E402
 from agentdesk.http import HttpResult  # noqa: E402
+from support.fake_clock import FakeClock  # noqa: E402
 from support.homes import NOW, fixture_home  # noqa: E402
 
 COLLECTOR_PATH = ROOT / "providers" / "claude" / "collector.py"
@@ -225,6 +227,56 @@ class CollectorClaudeTests(unittest.TestCase):
         dumped = json.dumps(rec)
         self.assertNotIn("sk-ant-fixture-token-DO-NOT-LEAK", dumped)
         self.assertNotIn("sk-ant-fixture-refresh-DO-NOT-LEAK", dumped)
+
+    def test_authorization_header_equals_fixture_token(self):
+        http = FakeHttp(HttpResult("ok", 200, payload("ok-points.json")))
+        with fixture_home("signed-in") as home:
+            rec = self.run_full(home / ".claude", http)
+        self.assertEqual(rec["status"], "ok")
+        self.assertEqual(
+            http.calls[0]["headers"]["Authorization"],
+            "Bearer sk-ant-fixture-token-DO-NOT-LEAK",
+        )
+
+    def test_mixed_sniff_points_scale_on_session(self):
+        http = FakeHttp(HttpResult("ok", 200, payload("ok-mixed-sniff.json")))
+        with fixture_home("signed-in") as home:
+            rec = self.run_full(home / ".claude", http)
+        used = {w["kind"]: w["used"] for w in rec["windows"]}
+        self.assertAlmostEqual(used["session"], 0.004)
+        self.assertAlmostEqual(used["weekly"], 0.81)
+
+    def test_negative_utilization_clamped_not_dropped(self):
+        body = json.dumps({
+            "five_hour": {"utilization": -5, "resets_at": "2023-11-14T15:13:20Z"},
+            "seven_day": {"utilization": 0.5, "resets_at": "2023-11-19T13:46:40Z"},
+        }).encode()
+        http = FakeHttp(HttpResult("ok", 200, body))
+        with fixture_home("signed-in") as home:
+            rec = self.run_full(home / ".claude", http)
+        session = next(w for w in rec["windows"] if w["kind"] == "session")
+        self.assertEqual(session["used"], 0.0)
+
+    def test_build_http_and_clock_ignore_env_without_test(self):
+        old_now = os.environ.get("AGENT_DESK_NOW")
+        old_ca = os.environ.get("AGENT_DESK_CA_FILE")
+        os.environ["AGENT_DESK_NOW"] = "123"
+        os.environ["AGENT_DESK_CA_FILE"] = "/tmp/no-such-ca.pem"
+        try:
+            http = self.mod.build_http(False)
+            clock = self.mod.build_clock(False)
+            self.assertIsNone(http.cafile)
+            self.assertIsInstance(clock, Clock)
+            self.assertNotIsInstance(clock, FakeClock)
+        finally:
+            if old_now is None:
+                os.environ.pop("AGENT_DESK_NOW", None)
+            else:
+                os.environ["AGENT_DESK_NOW"] = old_now
+            if old_ca is None:
+                os.environ.pop("AGENT_DESK_CA_FILE", None)
+            else:
+                os.environ["AGENT_DESK_CA_FILE"] = old_ca
 
 
 if __name__ == "__main__":

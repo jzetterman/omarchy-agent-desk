@@ -74,5 +74,5 @@
     "clientId": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
     "clientIdKey": null
   },
-  "installHint": "Install Claude Code: `mise use -g claude@latest`"
+  "installHint": "Install Claude Code: mise use -g claude@latest"
 }

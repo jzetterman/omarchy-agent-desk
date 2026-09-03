@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+PROVIDER_ID_RE = re.compile(r"^[a-z0-9-]+$")
 
 
 def empty_state() -> dict:
@@ -36,6 +37,13 @@ def _valid_imported_home(home: str) -> bool:
 
 def validate(doc) -> dict | None:
     """Return a cleaned state dict, or None if the file is structurally invalid."""
+    try:
+        return _validate(doc)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _validate(doc) -> dict | None:
     if not isinstance(doc, dict):
         return None
     if doc.get("schemaVersion") != 1:
@@ -58,15 +66,23 @@ def validate(doc) -> dict | None:
                 return None
         elif acct.get("home") is not None:
             return None
+        provider = acct.get("provider")
+        if not isinstance(provider, str) or not PROVIDER_ID_RE.fullmatch(provider):
+            return None
+        generation = acct.get("generation")
+        if generation is None:
+            generation = 1
+        elif isinstance(generation, bool) or not isinstance(generation, int):
+            return None
         cleaned_accounts.append({
             "id": aid,
-            "provider": str(acct.get("provider") or ""),
+            "provider": provider,
             "kind": kind,
             "name": str(acct.get("name") or ""),
             "home": acct.get("home") if kind == "imported" else None,
             "homeFromEnv": bool(acct.get("homeFromEnv")) if kind == "imported" else False,
             "createdAt": str(acct.get("createdAt") or ""),
-            "generation": int(acct.get("generation") or 1),
+            "generation": generation,
         })
     active_in = doc.get("active") if isinstance(doc.get("active"), dict) else {}
     active = {}
@@ -81,18 +97,27 @@ def validate(doc) -> dict | None:
             imported = next((a for a in group if a["kind"] == "imported"), group[0])
             active[provider] = imported["id"]
     routing = doc.get("routing") if isinstance(doc.get("routing"), dict) else {}
+    shims = routing.get("shims") if routing.get("shims") is not None else []
+    if not isinstance(shims, list):
+        return None
+    shadowed = routing.get("shadowed") if routing.get("shadowed") is not None else {}
+    if not isinstance(shadowed, dict):
+        return None
     out = empty_state()
-    try:
-        out["generation"] = int(doc.get("generation") or 0)
-    except (TypeError, ValueError):
-        out["generation"] = 0
+    generation = doc.get("generation") or 0
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        try:
+            generation = int(generation)
+        except (TypeError, ValueError):
+            return None
+    out["generation"] = generation
     out["accounts"] = cleaned_accounts
     out["active"] = active
     out["routing"] = {
         "installed": bool(routing.get("installed")),
         "partial": bool(routing.get("partial")),
-        "shims": list(routing.get("shims") or []),
-        "shadowed": dict(routing.get("shadowed") or {}),
+        "shims": list(shims),
+        "shadowed": dict(shadowed),
         "rcFile": routing.get("rcFile"),
         "rcCreated": bool(routing.get("rcCreated")),
     }
@@ -123,14 +148,15 @@ def publish(path: Path, doc: dict) -> None:
         pass
     payload = (json.dumps(doc, indent=2, sort_keys=False) + "\n").encode()
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(str(tmp), flags, 0o600)
     try:
+        os.fchmod(fd, 0o600)
         os.write(fd, payload)
         os.fsync(fd)
     finally:
         os.close(fd)
     os.replace(tmp, path)
-    doc["generation"] = int(doc.get("generation") or 0)
 
 
 def bump_and_publish(path: Path, doc: dict) -> dict:

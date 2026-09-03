@@ -79,11 +79,14 @@ def load_one(path: Path, dirname: str | None = None) -> dict:
         has_key = bool(urls.get("clientIdKey"))
         if has_id == has_key:
             raise ValueError("urls.refresh requires exactly one of clientId / clientIdKey")
-    lock = (doc.get("credential") or {}).get("lockFile") if isinstance(doc.get("credential"), dict) else None
+    cred = doc.get("credential")
+    if not isinstance(cred, dict):
+        raise ValueError("missing credential")
+    lock = cred.get("lockFile")
     if isinstance(lock, dict):
         if lock.get("kind") != "pidfile":
             raise ValueError('credential.lockFile.kind must be "pidfile"')
-    for required in ("name", "mark", "defaultHome", "credential", "scale"):
+    for required in ("name", "mark", "defaultHome", "scale"):
         if required not in doc:
             raise ValueError(f"missing {required}")
     return doc

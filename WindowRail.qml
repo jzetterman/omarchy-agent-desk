@@ -15,48 +15,57 @@ Item {
     property color urgent: Color.urgent
     property color track: Style.selectedFillFor(foreground, Color.accent)
     property string fontFamily: Style.font.family
-    property real warningThreshold: 0.75
-    property real criticalThreshold: 0.90
 
     readonly property real used: {
         if (balance) return Number(balance.used || 0)
         if (window) return Number(window.used || 0)
         return 0
     }
-    readonly property bool alarming: used >= criticalThreshold
+    readonly property bool alarming: used >= 0.9
     readonly property real thickness: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
 
-    implicitHeight: Math.max(label.implicitHeight, percentLabel.implicitHeight) + thickness + Style.space(6) + caption.implicitHeight
-    implicitWidth: 200
+    implicitHeight: labelRow.implicitHeight + thickness + caption.implicitHeight + Style.space(8)
+    implicitWidth: Style.space(200)
 
-    Text {
-        id: label
+    Item {
+        id: labelRow
         anchors.left: parent.left
-        anchors.top: parent.top
-        text: Format.plain(root.balance ? "Balance" : String((root.window && root.window.label) || ""))
-        textFormat: Text.PlainText
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-    }
-
-    Text {
-        id: percentLabel
         anchors.right: parent.right
         anchors.top: parent.top
-        text: Format.percent(root.used) + "%"
-        textFormat: Text.PlainText
-        color: root.alarming ? root.urgent : root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
+        implicitHeight: Math.max(label.implicitHeight, percentLabel.implicitHeight)
+
+        Text {
+            id: label
+            anchors.left: parent.left
+            anchors.right: percentLabel.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            text: Format.plain(root.balance ? "Balance" : String((root.window && root.window.label) || ""))
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            elide: Text.ElideRight
+        }
+
+        Text {
+            id: percentLabel
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: Format.percent(root.used) + "%"
+            textFormat: Text.PlainText
+            color: root.alarming ? root.urgent : root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+        }
     }
 
     Item {
         id: meter
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: label.bottom
-        anchors.topMargin: Style.space(2)
+        anchors.top: labelRow.bottom
+        anchors.topMargin: Style.space(4)
         height: root.thickness
 
         Rectangle {
@@ -85,7 +94,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: meter.bottom
-        anchors.topMargin: Style.space(2)
+        anchors.topMargin: Style.space(4)
         text: {
             if (hover.containsMouse && root.window && root.window.resetsAt)
                 return Format.exactReset(root.window.resetsAt)

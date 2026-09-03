@@ -9,9 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agentdesk.clock import FakeClock  # noqa: E402
 from agentdesk.runner import compute_readout  # noqa: E402
-from support.homes import NOW  # noqa: E402
 
 
 def acct(aid, provider, kind="imported", created="2023-11-14T13:46:40Z", name=None):
@@ -151,6 +149,52 @@ class ReadoutTests(unittest.TestCase):
         )
         self.assertEqual(out["used"], None)
         self.assertEqual(out["level"], "none")
+
+    def test_balance_top_includes_funded_and_spent(self):
+        accounts = [acct("c1" + "0" * 30, "claude", name="personal")]
+        records = {
+            accounts[0]["id"]: {
+                "status": "ok",
+                "identity": {},
+                "windows": [],
+                "balance": {
+                    "remaining": 6,
+                    "funded": 10,
+                    "spent": 4,
+                    "unit": "USD",
+                    "precision": 2,
+                    "used": 0.4,
+                },
+                "fetchedAt": "t",
+                "collectedAt": "t",
+            }
+        }
+        out = compute_readout(
+            accounts, records, {"claude": accounts[0]["id"]},
+            PROVIDERS, ["claude"], "active", 0.75, 0.90,
+        )
+        self.assertEqual(out["top"]["kind"], "balance")
+        self.assertEqual(out["top"]["funded"], 10)
+        self.assertEqual(out["top"]["spent"], 4)
+        self.assertEqual(out["top"]["remaining"], 6)
+
+    def test_accounts_present_but_no_numeric_used(self):
+        accounts = [acct("c1" + "0" * 30, "claude", name="personal")]
+        records = {
+            accounts[0]["id"]: {
+                "status": "ok",
+                "identity": {"email": "a@b.c"},
+                "windows": [{"id": "session", "kind": "session", "label": "Session", "used": None}],
+                "balance": None,
+                "fetchedAt": "t",
+                "collectedAt": "t",
+            }
+        }
+        out = compute_readout(
+            accounts, records, {"claude": accounts[0]["id"]},
+            PROVIDERS, ["claude"], "active", 0.75, 0.90,
+        )
+        self.assertEqual(out, {"used": None, "level": "none", "top": None})
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from agentdesk.state import bump_and_publish, empty_state, load as load_state
 KEEP_ON_FAILURE = ("identity", "windows", "balance", "fetchedAt")
 REPLACE_STATUSES = {"ok", "no-limits", "not-signed-in", "not-installed"}
 BACKOFF_STATUSES = {"rate-limited", "offline", "failed"}
+OPEN_NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def merge_record(old: dict | None, new: dict) -> dict:
@@ -50,67 +52,63 @@ def compute_readout(accounts, records, active, providers, provider_order, scope,
     for pid in sorted(enabled):
         if pid not in order:
             order.append(pid)
-
-    def cards_for(provider):
-        group = [a for a in accounts if a.get("provider") == provider]
-        imported = [a for a in group if a.get("kind") == "imported"]
-        isolated = sorted(
-            [a for a in group if a.get("kind") == "isolated"],
-            key=lambda a: a.get("createdAt") or "",
-        )
-        return imported + isolated
-
+    p_rank = {pid: i for i, pid in enumerate(order)}
+    card_index = {}
     candidates = []
-    for p_index, pid in enumerate(order):
+    for acct in accounts:
+        pid = acct.get("provider")
         if not enabled.get(pid, True):
             continue
-        for c_index, acct in enumerate(cards_for(pid)):
-            if scope == "active" and active.get(pid) != acct["id"]:
+        if scope == "active" and active.get(pid) != acct["id"]:
+            continue
+        c_index = card_index.get(pid, 0)
+        card_index[pid] = c_index + 1
+        rec = records.get(acct["id"]) or {}
+        windows = rec.get("windows") or []
+        for window in windows:
+            used = window.get("used")
+            if used is None:
                 continue
-            rec = records.get(acct["id"]) or {}
-            windows = rec.get("windows") or []
-            for window in windows:
-                used = window.get("used")
-                if used is None:
-                    continue
-                candidates.append((
-                    float(used), p_index, c_index, kind_rank(window.get("kind") or ""),
-                    str(window.get("label") or ""),
-                    {
-                        "provider": pid,
-                        "providerName": names.get(pid, pid),
-                        "accountId": acct["id"],
-                        "accountName": acct.get("name") or "",
-                        "kind": "window",
-                        "label": window.get("label") or "",
-                        "used": float(used),
-                        "resetsAt": window.get("resetsAt"),
-                        "remaining": None,
-                        "unit": None,
-                        "precision": None,
-                        "fetchedAt": rec.get("fetchedAt"),
-                    },
-                ))
-            bal = rec.get("balance")
-            if isinstance(bal, dict) and bal.get("used") is not None:
-                used = float(bal["used"])
-                candidates.append((
-                    used, p_index, c_index, len(KIND_ORDER) + 1, "",
-                    {
-                        "provider": pid,
-                        "providerName": names.get(pid, pid),
-                        "accountId": acct["id"],
-                        "accountName": acct.get("name") or "",
-                        "kind": "balance",
-                        "label": "",
-                        "used": used,
-                        "resetsAt": None,
-                        "remaining": bal.get("remaining"),
-                        "unit": bal.get("unit"),
-                        "precision": bal.get("precision"),
-                        "fetchedAt": rec.get("fetchedAt"),
-                    },
-                ))
+            candidates.append((
+                float(used), p_rank.get(pid, len(order)), c_index, kind_rank(window.get("kind") or ""),
+                str(window.get("label") or ""),
+                {
+                    "provider": pid,
+                    "providerName": names.get(pid, pid),
+                    "accountId": acct["id"],
+                    "accountName": acct.get("name") or "",
+                    "kind": "window",
+                    "label": window.get("label") or "",
+                    "used": float(used),
+                    "resetsAt": window.get("resetsAt"),
+                    "remaining": None,
+                    "unit": None,
+                    "precision": None,
+                    "fetchedAt": rec.get("fetchedAt"),
+                },
+            ))
+        bal = rec.get("balance")
+        if isinstance(bal, dict) and bal.get("used") is not None:
+            used = float(bal["used"])
+            candidates.append((
+                used, p_rank.get(pid, len(order)), c_index, len(KIND_ORDER) + 1, "",
+                {
+                    "provider": pid,
+                    "providerName": names.get(pid, pid),
+                    "accountId": acct["id"],
+                    "accountName": acct.get("name") or "",
+                    "kind": "balance",
+                    "label": "",
+                    "used": used,
+                    "resetsAt": None,
+                    "remaining": bal.get("remaining"),
+                    "funded": bal.get("funded"),
+                    "spent": bal.get("spent"),
+                    "unit": bal.get("unit"),
+                    "precision": bal.get("precision"),
+                    "fetchedAt": rec.get("fetchedAt"),
+                },
+            ))
     if not candidates:
         return {"used": None, "level": "none", "top": None}
     candidates.sort(key=lambda c: (-c[0], c[1], c[2], c[3], c[4]))
@@ -128,13 +126,10 @@ def compute_readout(accounts, records, active, providers, provider_order, scope,
 class Scheduler:
     """Per-account due times, single-flight, backoff, and collector spawn."""
 
-    def __init__(self, clock: Clock, interval_sec: float, floor_sec: float,
-                 timeout_sec: float, grace_sec: float):
+    def __init__(self, clock: Clock, interval_sec: float, floor_sec: float):
         self.clock = clock
         self.interval_sec = interval_sec
         self.floor_sec = floor_sec
-        self.timeout_sec = timeout_sec
-        self.grace_sec = grace_sec
         self.entries = {}
 
     def ensure(self, account_id: str, generation: int) -> dict:
@@ -143,7 +138,7 @@ class Scheduler:
             now = self.clock.monotonic()
             entry = {
                 "nextDueMono": now,
-                "lastStartMono": 0.0,
+                "lastStartMono": None,
                 "backoffMultiplier": 1,
                 "inflight": False,
                 "held": False,
@@ -169,6 +164,9 @@ class Scheduler:
         self.interval_sec = interval_sec
         now = self.clock.monotonic()
         for entry in self.entries.values():
+            if entry["lastStartMono"] is None:
+                entry["nextDueMono"] = now
+                continue
             entry["nextDueMono"] = entry["lastStartMono"] + interval_sec * entry["backoffMultiplier"]
             if entry["nextDueMono"] < now:
                 entry["nextDueMono"] = now
@@ -182,7 +180,7 @@ class Scheduler:
             if manual_ids is not None:
                 if aid not in manual_ids:
                     continue
-                if entry["lastStartMono"] and now - entry["lastStartMono"] < self.floor_sec:
+                if entry["lastStartMono"] is not None and now - entry["lastStartMono"] < self.floor_sec:
                     continue
                 due.append(aid)
             elif now >= entry["nextDueMono"]:
@@ -200,11 +198,10 @@ class Scheduler:
             return None
         return min(waits)
 
-    def note_start(self, account_id: str, proc) -> int:
+    def note_start(self, account_id: str) -> int:
         entry = self.entries[account_id]
         entry["inflight"] = True
         entry["lastStartMono"] = self.clock.monotonic()
-        entry["proc"] = proc
         return entry["generation"]
 
     def note_result(self, account_id: str, status: str, reason: str | None) -> None:
@@ -214,8 +211,7 @@ class Scheduler:
         entry["inflight"] = False
         entry["proc"] = None
         if status in BACKOFF_STATUSES or (status == "expired" and reason == "grant-rejected"):
-            prev = entry["backoffMultiplier"]
-            entry["backoffMultiplier"] = min(8, max(2, 2 * prev if prev > 1 else 2))
+            entry["backoffMultiplier"] = min(8, 2 * entry["backoffMultiplier"])
         else:
             entry["backoffMultiplier"] = 1
         entry["nextDueMono"] = entry["lastStartMono"] + self.interval_sec * entry["backoffMultiplier"]
@@ -234,7 +230,6 @@ class Runner:
         floor_sec: float = 60.0,
         interval_sec: float = 900.0,
         test_mode: bool = False,
-        interactive_path: str | None = None,
         home: str | None = None,
     ):
         self.plugin_dir = Path(plugin_dir)
@@ -262,24 +257,15 @@ class Runner:
         for d in self.descriptors:
             install_dirs.extend(d.get("installDirs") or [])
         self.fallback = fallback_path(os.environ.get("PATH") or "/usr/bin", install_dirs, str(self.home))
-        self._path_injected = interactive_path is not None
-        if interactive_path is not None:
-            self.path = interactive_path
-            self.path_probe = "ok"
-        else:
-            self.path = self.fallback
-            self.path_probe = "pending"
+        self.path = self.fallback
+        self.path_probe = "pending"
         self.probe_envs = {}
         self.state, err = load_state(self.config_dir / "state.json")
         self.state_error = err
         if self.state is None:
             self.state = empty_state()
         self.records = {}
-        self._load_records()
-        self.scheduler = Scheduler(
-            self.clock, interval_sec, floor_sec, collector_timeout_sec, grace_sec,
-        )
-        self._sync_schedule()
+        self.scheduler = Scheduler(self.clock, interval_sec, floor_sec)
         self.results = deque()
         self.threads = []
         self.wake_r, self.wake_w = os.pipe()
@@ -291,22 +277,38 @@ class Runner:
         self._stop = False
         self.manual_queue = set()
         self.provider_errors = list(self.load_errors)
+        self._dirty = False
+        self._probe_inflight = False
+        self._probe_proc = None
+        self.python_bin = shutil.which("python3") or sys.executable
+        self.terminal_bin = shutil.which("omarchy-launch-terminal")
+
+    def _now_iso(self) -> str:
+        return datetime.fromtimestamp(self.clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _mark_dirty(self) -> None:
+        self._dirty = True
 
     def _sync_schedule(self) -> None:
-        live = {a["id"] for a in self.state.get("accounts") or []}
-        for aid in list(self.scheduler.entries):
-            if aid not in live:
-                self.scheduler.drop(aid)
+        live = set()
         for acct in self.state.get("accounts") or []:
             if not self._provider_enabled(acct["provider"]):
                 continue
+            if acct["provider"] not in self.desc_by_id:
+                continue
+            live.add(acct["id"])
             self.scheduler.ensure(acct["id"], acct.get("generation") or 1)
+        for aid in list(self.scheduler.entries):
+            if aid not in live:
+                self.scheduler.drop(aid)
 
     def _provider_enabled(self, pid: str) -> bool:
         value = self.provider_enabled.get(pid)
         return True if value is None else bool(value)
 
     def _load_records(self) -> None:
+        if self.state_error:
+            return
         root = self.state_dir / "records"
         saved = {(a["provider"], a["id"]) for a in self.state.get("accounts") or []}
         if root.is_dir():
@@ -340,8 +342,9 @@ class Runner:
             pass
         payload = (json.dumps(rec) + "\n").encode()
         tmp = path.with_name(path.name + ".tmp")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | OPEN_NOFOLLOW, 0o600)
         try:
+            os.fchmod(fd, 0o600)
             os.write(fd, payload)
             os.fsync(fd)
         finally:
@@ -355,13 +358,16 @@ class Runner:
         return None
 
     def _log(self, message: str) -> None:
-        ensure_dir(self.state_dir)
-        path = self.state_dir / "runner.log"
-        line = message.replace("\n", " ") + "\n"
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line)
         try:
-            os.chmod(path, 0o600)
+            ensure_dir(self.state_dir)
+            path = self.state_dir / "runner.log"
+            line = (message.replace("\n", " ") + "\n").encode()
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | OPEN_NOFOLLOW, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                os.write(fd, line)
+            finally:
+                os.close(fd)
         except OSError:
             pass
 
@@ -369,15 +375,23 @@ class Runner:
         path = self.state_dir / "runner.log"
         try:
             if path.is_file() and path.stat().st_size > 1_000_000:
-                path.write_text("", encoding="utf-8")
-                os.chmod(path, 0o600)
+                fd = os.open(str(path), os.O_WRONLY | os.O_TRUNC | OPEN_NOFOLLOW, 0o600)
+                try:
+                    os.fchmod(fd, 0o600)
+                finally:
+                    os.close(fd)
         except OSError:
             pass
 
     def take_lock(self) -> int:
         ensure_dir(self.config_dir)
         path = self.config_dir / "runner.lock"
-        fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_RDWR | OPEN_NOFOLLOW, 0o600)
+            os.fchmod(fd, 0o600)
+        except OSError:
+            sys.stderr.write("agent-desk-runner: cannot open runner.lock\n")
+            return 75
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -394,6 +408,8 @@ class Runner:
         self._truncate_log()
         if self.state_error:
             return 0
+        self._load_records()
+        self._sync_schedule()
         if self.path_probe == "pending":
             self._submit_probe()
         else:
@@ -404,6 +420,9 @@ class Runner:
         return [d["homeEnv"] for d in sorted(self.descriptors, key=lambda d: d["id"])]
 
     def _submit_probe(self) -> None:
+        if self._probe_inflight:
+            return
+        self._probe_inflight = True
         shell = os.environ.get("SHELL") or "/bin/bash"
         argv = probe_command(shell, self._home_envs())
         self._spawn_job({"type": "probe", "argv": argv, "timeout": self.probe_timeout_sec, "env": dict(os.environ)})
@@ -423,6 +442,7 @@ class Runner:
                     changed = True
         if changed:
             self._publish()
+            self._mark_dirty()
         self._sync_schedule()
 
     def _import_default(self, desc: dict) -> bool:
@@ -431,14 +451,14 @@ class Runner:
         raw = env_val or desc.get("defaultHome") or ""
         home = os.path.abspath(os.path.expanduser(raw))
         parts = [p for p in home.split("/") if p]
-        if not home.startswith("/") or "." in parts or ".." in parts or not home:
+        if not home.startswith("/") or "." in parts or ".." in parts:
             self.provider_errors.append({
                 "dir": desc["id"],
                 "message": f"default home is not a plain absolute path: {raw}",
             })
             return False
         aid = uuid.uuid4().hex
-        now = datetime.fromtimestamp(self.clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = self._now_iso()
         self.state["accounts"].append({
             "id": aid,
             "provider": desc["id"],
@@ -488,11 +508,13 @@ class Runner:
             proc = subprocess.Popen(
                 argv,
                 start_new_session=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
             )
-            job["proc"] = proc
+            if job.get("type") == "probe":
+                self._probe_proc = proc
             if job.get("type") == "collector":
                 entry = self.scheduler.entries.get(job["accountId"])
                 if entry is not None:
@@ -545,6 +567,7 @@ class Runner:
         self._reap()
         if self.state_error:
             return
+        self.detect_and_import()
         if self.manual_queue:
             if "all" in self.manual_queue:
                 manual = set(self.scheduler.entries)
@@ -557,12 +580,23 @@ class Runner:
         for aid in due:
             self._spawn_collector(aid)
 
+    def _bump_due(self, account_id: str) -> None:
+        entry = self.scheduler.entries.get(account_id)
+        if not entry:
+            return
+        entry["nextDueMono"] = self.clock.monotonic() + self.scheduler.interval_sec * entry["backoffMultiplier"]
+
     def _spawn_collector(self, account_id: str) -> None:
+        entry = self.scheduler.entries.get(account_id)
+        if entry is None or entry["inflight"] or entry["held"]:
+            return
         acct = self._account(account_id)
         if not acct:
+            self._bump_due(account_id)
             return
         desc = self.desc_by_id.get(acct["provider"])
         if not desc:
+            self._bump_due(account_id)
             return
         collector = self.plugin_dir / "providers" / desc["id"] / "collector.py"
         binary = real_binary(desc["binary"], self.path) or ""
@@ -574,12 +608,13 @@ class Runner:
             try:
                 home = str(isolated_home(acct["provider"], acct["id"], home=str(self.home)))
             except Exception:
+                self._bump_due(account_id)
                 return
             kind = "isolated"
             home_env_set = True
         deadline = self.clock.now() + self.collector_timeout_sec
         argv = [
-            sys.executable, str(collector),
+            self.python_bin, str(collector),
             "--mode", "full",
             "--home", home,
             "--home-kind", kind,
@@ -590,10 +625,7 @@ class Runner:
             argv.append("--home-env-set")
         if self.test_mode:
             argv.append("--test")
-        entry = self.scheduler.entries.get(account_id)
-        if entry is None or entry["inflight"] or entry["held"]:
-            return
-        self.scheduler.note_start(account_id, None)
+        self.scheduler.note_start(account_id)
         self._spawn_job({
             "type": "collector",
             "accountId": account_id,
@@ -611,6 +643,9 @@ class Runner:
                 self._handle_collector(item)
 
     def _handle_probe(self, item: dict) -> None:
+        self._probe_inflight = False
+        self._probe_proc = None
+        self._mark_dirty()
         if item.get("timed_out") or item.get("code") not in (0, None):
             self.path_probe = "fallback"
             self.path = self.fallback
@@ -654,7 +689,7 @@ class Runner:
                 "identity": None,
                 "windows": [],
                 "balance": None,
-                "collectedAt": datetime.fromtimestamp(self.clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "collectedAt": self._now_iso(),
             }
         else:
             try:
@@ -664,14 +699,14 @@ class Runner:
                     "status": "failed",
                     "help": "Collector output was not JSON",
                     "provider": acct["provider"],
-                    "collectedAt": datetime.fromtimestamp(self.clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "collectedAt": self._now_iso(),
                 }
             if item.get("code") not in (0, None) and (not isinstance(new, dict) or new.get("status") not in REPLACE_STATUSES):
                 new = {
                     "status": "failed",
                     "help": "Collector exited with an error",
                     "provider": acct["provider"],
-                    "collectedAt": datetime.fromtimestamp(self.clock.now(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "collectedAt": self._now_iso(),
                 }
         new = normalize(new if isinstance(new, dict) else {"status": "failed", "provider": acct["provider"]})
         new["accountId"] = account_id
@@ -681,7 +716,8 @@ class Runner:
         self.records[account_id] = merged
         self._write_record(account_id, merged)
         self.scheduler.note_result(account_id, merged.get("status"), merged.get("statusReason"))
-        self._log(f"collector {acct['provider']} {merged.get('status')}")
+        self._log(f"collector {acct['provider']} {merged.get('status')} exit {item.get('code')}")
+        self._mark_dirty()
 
     def handle_command(self, cmd: dict) -> list[dict]:
         name = cmd.get("cmd")
@@ -754,7 +790,7 @@ class Runner:
     def _cmd_refresh(self, cmd: dict) -> list[dict]:
         account_id = cmd.get("accountId") or "all"
         self.manual_queue.add(account_id)
-        if not self._path_injected and (self.path_probe != "ok" or cmd.get("manual")):
+        if self.path_probe != "ok" or cmd.get("manual"):
             self._submit_probe()
         self.tick()
         return [self.snapshot_event()]
@@ -767,18 +803,24 @@ class Runner:
         self._publish()
         return [self.snapshot_event()]
 
-    def first_provider_id(self) -> str | None:
-        for pid in self._ordered_provider_ids():
-            prov = self._provider_view(self.desc_by_id[pid]) if pid in self.desc_by_id else None
-            if prov and prov["enabled"] and prov["installed"]:
-                return pid
+    def first_provider_id(self, providers=None) -> str | None:
+        views = providers
+        if views is None:
+            views = []
+            for pid in self._ordered_provider_ids():
+                desc = self.desc_by_id.get(pid)
+                if desc:
+                    views.append(self._provider_view(desc))
+        for prov in views:
+            if prov.get("enabled") and prov.get("installed"):
+                return prov["id"]
         return None
 
     def _cmd_next(self) -> list[dict]:
         pid = self.first_provider_id()
         if not pid:
             return [self.snapshot_event()]
-        cards = [a for a in self._cards(pid)]
+        cards = self._cards(pid)
         if not cards:
             return [self.snapshot_event()]
         ids = [a["id"] for a in cards]
@@ -798,6 +840,8 @@ class Runner:
         desc = self.desc_by_id.get(acct["provider"])
         if not desc:
             return [{"event": "caption", "text": "unknown provider"}]
+        if not self.terminal_bin:
+            return [{"event": "caption", "text": "omarchy-launch-terminal is not on PATH"}]
         binary = real_binary(desc["binary"], self.path)
         if not binary:
             return [{"event": "caption", "text": "CLI is not installed"}]
@@ -808,13 +852,20 @@ class Runner:
                 home = str(isolated_home(acct["provider"], acct["id"], home=str(self.home)))
             except Exception as exc:
                 return [{"event": "caption", "text": str(exc)}]
-            argv = ["omarchy-launch-terminal", "/usr/bin/env", f"{desc['homeEnv']}={home}", binary, *args]
+            argv = [self.terminal_bin, "/usr/bin/env", f"{desc['homeEnv']}={home}", binary, *args]
         elif acct.get("homeFromEnv"):
-            argv = ["omarchy-launch-terminal", "/usr/bin/env", f"{desc['homeEnv']}={acct['home']}", binary, *args]
+            argv = [self.terminal_bin, "/usr/bin/env", f"{desc['homeEnv']}={acct['home']}", binary, *args]
         else:
-            argv = ["omarchy-launch-terminal", binary, *args]
+            argv = [self.terminal_bin, binary, *args]
         try:
-            subprocess.Popen(argv, start_new_session=True, env=os.environ.copy())
+            subprocess.Popen(
+                argv,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=os.environ.copy(),
+            )
         except OSError as exc:
             return [{"event": "caption", "text": f"launch failed: {exc.__class__.__name__}"}]
         return [self.snapshot_event()]
@@ -827,6 +878,18 @@ class Runner:
             key=lambda a: a.get("createdAt") or "",
         )
         return imported + isolated
+
+    def _ordered_accounts(self) -> list[dict]:
+        out = []
+        seen = set()
+        for pid in self._ordered_provider_ids():
+            for acct in self._cards(pid):
+                out.append(acct)
+                seen.add(acct["id"])
+        for acct in self.state.get("accounts") or []:
+            if acct["id"] not in seen:
+                out.append(acct)
+        return out
 
     def _ordered_provider_ids(self) -> list[str]:
         ids = [d["id"] for d in self.descriptors]
@@ -866,9 +929,14 @@ class Runner:
         }
 
     def snapshot_event(self) -> dict:
-        providers = [self._provider_view(d) for d in self.descriptors]
+        providers = []
+        for pid in self._ordered_provider_ids():
+            desc = self.desc_by_id.get(pid)
+            if desc:
+                providers.append(self._provider_view(desc))
+        accounts_src = self._ordered_accounts()
         accounts_out = []
-        for acct in self.state.get("accounts") or []:
+        for acct in accounts_src:
             item = dict(acct)
             if acct.get("kind") == "isolated":
                 try:
@@ -887,7 +955,7 @@ class Runner:
         state_out = dict(self.state)
         state_out["accounts"] = accounts_out
         readout = compute_readout(
-            self.state.get("accounts") or [],
+            accounts_src,
             self.records,
             self.state.get("active") or {},
             providers,
@@ -901,7 +969,7 @@ class Runner:
             "state": state_out,
             "records": records_out,
             "providers": providers,
-            "firstProviderId": self.first_provider_id(),
+            "firstProviderId": self.first_provider_id(providers),
             "readout": readout,
             "pathProbe": self.path_probe,
             "login": None,
@@ -918,13 +986,16 @@ class Runner:
             if other["id"] == acct["id"] or other.get("provider") != acct.get("provider"):
                 continue
             other_rec = self.records.get(other["id"]) or {}
-            other_email = normalize_email(((other_rec.get("identity") or {}) or {}).get("email"))
+            other_email = normalize_email((other_rec.get("identity") or {}).get("email"))
             if other_email and other_email == email:
                 return {"id": other["id"], "name": other.get("name") or ""}
         return None
 
     def shutdown_workers(self) -> None:
         self._stop = True
+        probe = self._probe_proc
+        if probe is not None and probe.poll() is None:
+            self._kill_group(probe.pid, signal.SIGKILL)
         for entry in self.scheduler.entries.values():
             proc = entry.get("proc")
             if proc is not None and proc.poll() is None:
@@ -959,17 +1030,18 @@ class Runner:
                     for event in self.handle_line(line.decode("utf-8", errors="replace")):
                         stdout.write(json.dumps(event) + "\n")
                         stdout.flush()
+                        if event.get("event") == "snapshot":
+                            self._dirty = False
             if self.wake_r in ready:
                 try:
                     os.read(self.wake_r, 4096)
                 except OSError:
                     pass
-            before = (self.path_probe, self.state.get("generation"), tuple(sorted(self.records)))
             self.tick()
-            after = (self.path_probe, self.state.get("generation"), tuple(sorted(self.records)))
-            if before != after:
+            if self._dirty:
                 stdout.write(json.dumps(self.snapshot_event()) + "\n")
                 stdout.flush()
+                self._dirty = False
         self.shutdown_workers()
         return 0
 
@@ -981,14 +1053,24 @@ def main(argv: list[str]) -> int:
     test_mode = "--test" in argv
     plugin_dir = Path(__file__).resolve().parents[1]
     if "--plugin-dir" in argv:
+        if not test_mode:
+            sys.stderr.write("agent-desk-runner: --plugin-dir requires --test\n")
+            return 2
         idx = argv.index("--plugin-dir")
         if idx + 1 < len(argv):
             plugin_dir = Path(argv[idx + 1])
-    from agentdesk.clock import FakeClock
     clock = Clock()
     if test_mode and os.environ.get("AGENT_DESK_NOW"):
         now = float(os.environ["AGENT_DESK_NOW"])
-        clock = FakeClock(now=now, monotonic=now)
+
+        class _EnvClock(Clock):
+            def now(self) -> float:
+                return now
+
+            def monotonic(self) -> float:
+                return now
+
+        clock = _EnvClock()
     runner = Runner(plugin_dir=plugin_dir, clock=clock, test_mode=test_mode)
     try:
         return runner.serve(sys.stdin, sys.stdout)

@@ -31,7 +31,12 @@ while IFS= read -r hit; do
   lineno="${rest%%:*}"
   body="${rest#*:}"
   echo "$body" | grep -q 'Format.plain(' && continue
-  echo "$body" | grep -qE '^[[:space:]]*(text|tooltipText|label|description|placeholderText):[[:space:]]*["'\'']' && continue
+  if echo "$body" | grep -qE '^[[:space:]]*(text|tooltipText|label|description|placeholderText):[[:space:]]*["'\'']'; then
+    if echo "$body" | grep -qE '\+|\$\{'; then
+      fail "$file:$lineno kit text prop concatenates without Format.plain: $body"
+    fi
+    continue
+  fi
   fail "$file:$lineno kit text prop binds live data without Format.plain: $body"
 done < <(grep -nE "$props" "${qml_files[@]}" | grep -E "$pattern" || true)
 

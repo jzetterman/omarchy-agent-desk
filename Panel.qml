@@ -15,6 +15,7 @@ Panel {
     ipcTarget: "io.github.jzetterman.agent-desk"
     manageIpc: false
 
+    readonly property bool vertical: bar ? bar.vertical : false
     readonly property color foreground: bar ? bar.foreground : Color.foreground
     readonly property color urgent: bar ? bar.urgent : Color.urgent
     readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -25,8 +26,13 @@ Panel {
     property bool cursorActive: false
     property bool captionLatched: false
     property string latchedCaption: ""
+    property var providerIds: []
+    property var accountIdsByProvider: ({})
 
-    readonly property var validated: validatedSettings()
+    readonly property var validated: {
+        var _s = settings
+        return validatedSettings()
+    }
     readonly property var snap: desk.snapshot
     readonly property var readout: (snap && snap.readout) ? snap.readout : { used: null, level: "none", top: null }
     readonly property bool readoutOn: validated.readout === true
@@ -37,9 +43,17 @@ Panel {
         if (!isFinite(t)) return false
         return (nowMs - t) / 1000 > validated.refreshIntervalSec
     }
+    readonly property color readoutColor: {
+        if (root.readout.level === "critical") return root.urgent
+        if (root.readout.level === "warning") return Qt.tint(root.barForeground, Util.alpha(root.urgent, 0.6))
+        return root.barForeground
+    }
 
     implicitWidth: barRow.implicitWidth
     implicitHeight: barRow.implicitHeight
+
+    onSnapChanged: syncModels()
+    Component.onCompleted: syncModels()
 
     // Plugin directory from this file's URL so the runner path is local.
     function resolvePluginDir() {
@@ -109,11 +123,19 @@ Panel {
             + 0.0722 * colorChannelLuminance(color.b)
     }
 
+    function markForSurface(surface, lightUrl, darkUrl) {
+        var light = colorLuminance(surface) >= 0.5
+        return Qt.resolvedUrl(light ? lightUrl : darkUrl)
+    }
+
     // Plugin mark, light twin first on a light bar.
     function barMarkSource() {
-        var surface = Color.bar.background
-        var light = colorLuminance(surface) >= 0.5
-        return Qt.resolvedUrl(light ? "assets/agent-desk-light.svg" : "assets/agent-desk.svg")
+        return markForSurface(Color.bar.background, "assets/agent-desk-light.svg", "assets/agent-desk.svg")
+    }
+
+    // Plugin mark on the popup, picked against Color.popups.background.
+    function popupMarkSource() {
+        return markForSurface(Color.popups.background, "assets/agent-desk-light.svg", "assets/agent-desk.svg")
     }
 
     // Provider mark path for a section header.
@@ -147,18 +169,47 @@ Panel {
         return out.concat(rest)
     }
 
-    // Card order: imported first, then isolated by createdAt.
+    // Filter snapshot accounts by provider. Card order is already in the snapshot.
     function accountsFor(providerId) {
         var accounts = (snap && snap.state && snap.state.accounts) ? snap.state.accounts : []
-        var imported = []
-        var isolated = []
+        var out = []
         for (var i = 0; i < accounts.length; i++) {
-            if (accounts[i].provider !== providerId) continue
-            if (accounts[i].kind === "imported") imported.push(accounts[i])
-            else isolated.push(accounts[i])
+            if (accounts[i].provider === providerId) out.push(accounts[i])
         }
-        isolated.sort(function(a, b) { return String(a.createdAt || "").localeCompare(String(b.createdAt || "")) })
-        return imported.concat(isolated)
+        return out
+    }
+
+    function providerById(pid) {
+        var list = orderedProviders()
+        for (var i = 0; i < list.length; i++) if (list[i].id === pid) return list[i]
+        return null
+    }
+
+    function accountById(pid, aid) {
+        var accts = accountsFor(pid)
+        for (var i = 0; i < accts.length; i++) if (accts[i].id === aid) return accts[i]
+        return null
+    }
+
+    function syncModels() {
+        var list = orderedProviders()
+        var ids = []
+        for (var i = 0; i < list.length; i++) ids.push(list[i].id)
+        if (ids.join("\n") !== providerIds.join("\n"))
+            providerIds = ids
+        var map = {}
+        var changed = Object.keys(accountIdsByProvider).length !== ids.length
+        for (var j = 0; j < ids.length; j++) {
+            var accts = accountsFor(ids[j])
+            var aids = []
+            for (var k = 0; k < accts.length; k++) aids.push(accts[k].id)
+            map[ids[j]] = aids
+            var old = accountIdsByProvider[ids[j]]
+            if (!old || old.join("\n") !== aids.join("\n"))
+                changed = true
+        }
+        if (changed)
+            accountIdsByProvider = map
     }
 
     // Flat visual index of a card, matching Keys.cards.
@@ -170,13 +221,39 @@ Panel {
         return -1
     }
 
+    function cardItemAt(visualIdx) {
+        for (var s = 0; s < sectionRepeater.count; s++) {
+            var sec = sectionRepeater.itemAt(s)
+            if (!sec || !sec.cardRepeater) continue
+            for (var c = 0; c < sec.cardRepeater.count; c++) {
+                var card = sec.cardRepeater.itemAt(c)
+                if (card && card.cardIndex === visualIdx) return card
+            }
+        }
+        return null
+    }
+
+    function scrollCursorIntoView() {
+        var card = cardItemAt(keyState.cursorIndex)
+        if (!card || panelFlick.height <= 0) return
+        var pos = card.mapToItem(column, 0, 0)
+        var y = pos.y
+        var h = card.height
+        var top = panelFlick.contentY
+        var view = panelFlick.height
+        var maxY = Math.max(0, panelFlick.contentHeight - view)
+        if (y < top)
+            panelFlick.contentY = Math.max(0, Math.min(maxY, y))
+        else if (y + h > top + view)
+            panelFlick.contentY = Math.max(0, Math.min(maxY, y + h - view))
+    }
+
     // Run a Keys.State action against the runner or the panel.
     function applyAction(action) {
         if (!action) return
         if (action.type === "set-active") desk.send({ cmd: "set-active", accountId: action.accountId })
         else if (action.type === "refresh") desk.send({ cmd: "refresh", accountId: "all", manual: true })
         else if (action.type === "close") root.close()
-        else if (action.type === "cursor") keyState = keyState
     }
 
     // Default hero caption: account count and last refresh age.
@@ -211,8 +288,6 @@ Panel {
         }
     }
 
-    onSettingsChanged: desk.settings = validatedSettings()
-
     Connections {
         target: desk
         function onCaptionTextChanged() {
@@ -237,9 +312,7 @@ Panel {
             id: button
             bar: root.bar
             active: root.readout.level === "critical"
-            foreground: root.readout.level === "warning"
-                ? Qt.tint(root.bar ? root.bar.barForeground : Color.foreground, Util.alpha(root.urgent, 0.6))
-                : (root.bar ? root.bar.barForeground : Color.foreground)
+            foreground: root.readoutColor
             tooltipText: Format.plain(Format.tooltip(root.readout.top, root.nowMs, root.staleTop))
             iconComponent: Component {
                 Image {
@@ -262,8 +335,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             text: Format.percent(root.readout.used) + "%"
             textFormat: Text.PlainText
-            color: root.readout.level === "critical" ? root.urgent
-                 : (root.readout.level === "warning" ? Qt.tint(root.foreground, Util.alpha(root.urgent, 0.6)) : root.foreground)
+            color: root.readoutColor
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
         }
@@ -312,6 +384,7 @@ Panel {
                 var result = Keys.move(root.keyState, dx, dy, root.snap)
                 root.keyState = result.state
                 root.applyAction(result.action)
+                root.scrollCursorIntoView()
             }
             onActivateRequested: root.applyAction(Keys.activate(root.keyState, root.snap))
             onCloseRequested: root.applyAction(Keys.closeRequested(root.keyState))
@@ -369,10 +442,10 @@ Panel {
                                 font.bold: true
                             }
                             Image {
-                                width: 14
-                                height: 14
+                                width: Style.space(14)
+                                height: Style.space(14)
                                 anchors.verticalCenter: parent.verticalCenter
-                                source: root.barMarkSource()
+                                source: root.popupMarkSource()
                                 fillMode: Image.PreserveAspectFit
                             }
                             Text {
@@ -445,55 +518,79 @@ Panel {
 
                     Repeater {
                         id: sectionRepeater
-                        model: root.snap.error === "state-unreadable" ? [] : root.orderedProviders()
+                        model: root.snap.error === "state-unreadable" ? [] : root.providerIds
 
                         Column {
                             id: section
                             required property var modelData
                             required property int index
+                            property var provider: root.providerById(modelData)
+                            property alias cardRepeater: cardRepeater
                             width: column.width
                             spacing: Style.space(10)
-                            visible: modelData.enabled !== false
+                            visible: provider && provider.enabled !== false
 
-                            Row {
-                                spacing: Style.space(8)
-                                Image {
-                                    width: 12
-                                    height: 12
+                            Item {
+                                width: parent.width
+                                implicitHeight: Math.max(mark.implicitHeight, header.implicitHeight, planLabel.implicitHeight)
+
+                                Row {
+                                    id: headerRow
+                                    anchors.left: parent.left
                                     anchors.verticalCenter: parent.verticalCenter
-                                    source: root.sectionMarkSource(section.modelData)
-                                    fillMode: Image.PreserveAspectFit
+                                    spacing: Style.space(8)
+
+                                    Image {
+                                        id: mark
+                                        width: Style.space(12)
+                                        height: Style.space(12)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        source: root.sectionMarkSource(section.provider)
+                                        fillMode: Image.PreserveAspectFit
+                                    }
+                                    PanelSectionHeader {
+                                        id: header
+                                        text: Format.plain(String((section.provider && section.provider.name) || "").toUpperCase())
+                                        foreground: root.foreground
+                                        fontFamily: root.fontFamily
+                                    }
                                 }
-                                PanelSectionHeader {
-                                    text: Format.plain(String(section.modelData.name || "").toUpperCase())
-                                    foreground: root.foreground
-                                    fontFamily: root.fontFamily
-                                }
+
                                 Text {
+                                    id: planLabel
+                                    textFormat: Text.PlainText
+                                    anchors.left: headerRow.right
+                                    anchors.leftMargin: Style.space(8)
+                                    anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: {
-                                        var accts = root.accountsFor(section.modelData.id)
-                                        var activeId = root.snap.state && root.snap.state.active ? root.snap.state.active[section.modelData.id] : ""
+                                        var p = section.provider
+                                        if (!p) return ""
+                                        var accts = root.accountsFor(p.id)
+                                        var activeId = root.snap.state && root.snap.state.active ? root.snap.state.active[p.id] : ""
                                         var rec = activeId && root.snap.records ? root.snap.records[activeId] : null
                                         var plan = rec && rec.identity ? rec.identity.plan : ""
                                         return Format.plain(plan || "")
                                     }
-                                    textFormat: Text.PlainText
                                     color: Qt.darker(root.foreground, 1.4)
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
+                                    elide: Text.ElideRight
                                 }
                             }
 
                             BorderSurface {
                                 width: parent.width
-                                visible: section.modelData.installed === false
+                                visible: section.provider && section.provider.installed === false
+                                color: Style.normalFillFor(root.foreground, Color.accent)
+                                borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+                                radius: Style.cornerRadius
                                 implicitHeight: hintText.implicitHeight + Style.space(16)
                                 Text {
                                     id: hintText
                                     anchors.fill: parent
                                     anchors.margins: Style.space(8)
-                                    text: Format.plain(String(section.modelData.installHint || ""))
+                                    text: Format.plain(String((section.provider && section.provider.installHint) || ""))
                                     textFormat: Text.PlainText
                                     wrapMode: Text.WordWrap
                                     color: root.foreground
@@ -503,30 +600,27 @@ Panel {
                             }
 
                             Repeater {
-                                model: section.modelData.installed === false ? [] : root.accountsFor(section.modelData.id)
+                                id: cardRepeater
+                                model: (section.provider && section.provider.installed === false) ? [] : (root.accountIdsByProvider[section.modelData] || [])
                                 AccountCard {
                                     required property var modelData
                                     required property int index
                                     width: section.width
-                                    account: modelData
-                                    record: root.snap.records ? root.snap.records[modelData.id] : null
-                                    provider: section.modelData
+                                    account: root.accountById(section.modelData, modelData)
+                                    record: root.snap.records ? root.snap.records[modelData] : null
+                                    provider: section.provider
                                     nowMs: root.nowMs
                                     refreshIntervalSec: root.validated.refreshIntervalSec
-                                    warningThreshold: root.validated.warningThreshold
-                                    criticalThreshold: root.validated.criticalThreshold
                                     urgent: root.urgent
                                     fontFamily: root.fontFamily
                                     foreground: root.foreground
-                                    isActive: root.snap.state && root.snap.state.active && root.snap.state.active[section.modelData.id] === modelData.id
-                                    cardIndex: root.visualIndex(section.modelData.id, modelData.id)
+                                    isActive: root.snap.state && root.snap.state.active && root.snap.state.active[section.modelData] === modelData
+                                    cardIndex: root.visualIndex(section.modelData, modelData)
                                     hasCursor: root.cursorActive && root.keyState.cursorIndex === cardIndex
-                                    onActivated: desk.send({ cmd: "set-active", accountId: modelData.id })
+                                    onActivated: desk.send({ cmd: "set-active", accountId: modelData })
                                     onHoveredCard: function(idx) {
                                         root.cursorActive = true
-                                        var s = root.keyState
-                                        s.cursorIndex = idx
-                                        root.keyState = s
+                                        root.keyState = { mode: root.keyState.mode, cursorIndex: idx }
                                     }
                                 }
                             }

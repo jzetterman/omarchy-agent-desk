@@ -2,12 +2,17 @@
 
 // Pure keyboard model. Phase 1 is list mode: cursor walk, set-active, refresh, Escape.
 
+function _copyState(state) {
+    return { mode: state && state.mode ? state.mode : "list", cursorIndex: state && state.cursorIndex ? state.cursorIndex : 0 }
+}
+
 // Fresh list-mode keyboard state.
 function createState() {
     return { mode: "list", cursorIndex: 0 }
 }
 
-// Visual card list across enabled provider sections, imported then isolated.
+// Visual card list across enabled provider sections. Accounts are already
+// in card order in the snapshot; this only filters by provider.
 function cards(snapshot) {
     var out = []
     if (!snapshot) return out
@@ -16,18 +21,10 @@ function cards(snapshot) {
     for (var i = 0; i < providers.length; i++) {
         var p = providers[i]
         if (p.enabled === false) continue
-        var group = []
+        var ordered = []
         for (var j = 0; j < accounts.length; j++) {
-            if (accounts[j].provider === p.id) group.push(accounts[j])
+            if (accounts[j].provider === p.id) ordered.push(accounts[j])
         }
-        var imported = []
-        var isolated = []
-        for (var k = 0; k < group.length; k++) {
-            if (group[k].kind === "imported") imported.push(group[k])
-            else isolated.push(group[k])
-        }
-        isolated.sort(function(a, b) { return String(a.createdAt || "").localeCompare(String(b.createdAt || "")) })
-        var ordered = imported.concat(isolated)
         for (var c = 0; c < ordered.length; c++) {
             out.push({
                 providerId: p.id,
@@ -60,39 +57,41 @@ function focusOnOpen(state, snapshot) {
             if (list[i].accountId === target) { idx = i; break }
         }
     }
-    state.cursorIndex = idx
-    state.mode = "list"
-    return state
+    var next = _copyState(state)
+    next.cursorIndex = idx
+    next.mode = "list"
+    return next
 }
 
 // j/k walk cards (wrap); h/l jump to the first card of the next/previous section.
 function move(state, dx, dy, snapshot) {
     var list = cards(snapshot)
-    if (list.length === 0) return { state: state, action: null }
+    var next = _copyState(state)
+    if (list.length === 0) return { state: next, action: null }
     if (dy !== 0) {
-        var next = state.cursorIndex + dy
-        next = ((next % list.length) + list.length) % list.length
-        state.cursorIndex = next
-        return { state: state, action: { type: "cursor" } }
+        var wrapped = next.cursorIndex + dy
+        wrapped = ((wrapped % list.length) + list.length) % list.length
+        next.cursorIndex = wrapped
+        return { state: next, action: { type: "cursor" } }
     }
     if (dx !== 0) {
-        var current = list[state.cursorIndex] || list[0]
+        var current = list[next.cursorIndex] || list[0]
         var want = current.sectionIndex + dx
         for (var i = 0; i < list.length; i++) {
             var idx = dx > 0 ? i : list.length - 1 - i
             if (dx > 0 && list[idx].sectionIndex >= want && list[idx].sectionIndex !== current.sectionIndex) {
-                state.cursorIndex = idx
-                return { state: state, action: { type: "cursor" } }
+                next.cursorIndex = idx
+                return { state: next, action: { type: "cursor" } }
             }
             if (dx < 0 && list[idx].sectionIndex <= want && list[idx].sectionIndex !== current.sectionIndex) {
                 var first = idx
                 while (first > 0 && list[first - 1].sectionIndex === list[idx].sectionIndex) first--
-                state.cursorIndex = first
-                return { state: state, action: { type: "cursor" } }
+                next.cursorIndex = first
+                return { state: next, action: { type: "cursor" } }
             }
         }
     }
-    return { state: state, action: null }
+    return { state: next, action: null }
 }
 
 // Enter/Space: set the focused card active.

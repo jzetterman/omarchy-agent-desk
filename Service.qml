@@ -28,6 +28,18 @@ Item {
     property int lockRetries: 0
     property int restartBackoffMs: 1000
 
+    function settingsCommand() {
+        return {
+            cmd: "settings",
+            refreshIntervalSec: settings.refreshIntervalSec,
+            providerOrder: settings.providerOrder,
+            providerEnabled: settings.providerEnabled,
+            warningThreshold: settings.warningThreshold,
+            criticalThreshold: settings.criticalThreshold,
+            readoutScope: settings.readoutScope
+        }
+    }
+
     function send(obj) {
         if (!proc.running) {
             if (obj && obj.cmd === "refresh") {
@@ -45,10 +57,7 @@ Item {
         try { parsed = JSON.parse(line) } catch (e) { return }
         if (!parsed || !parsed.event) return
         if (parsed.event === "snapshot") {
-            var next = parsed
-            if (root.snapshot && root.snapshot.error && (next.error === undefined || next.error === null))
-                next.error = null
-            root.snapshot = next
+            root.snapshot = parsed
         } else if (parsed.event === "caption") {
             root.captionText = parsed.text || ""
         }
@@ -85,16 +94,13 @@ Item {
     }
 
     function onStarted() {
-        send({
-            cmd: "settings",
-            refreshIntervalSec: settings.refreshIntervalSec,
-            providerOrder: settings.providerOrder,
-            providerEnabled: settings.providerEnabled,
-            warningThreshold: settings.warningThreshold,
-            criticalThreshold: settings.criticalThreshold,
-            readoutScope: settings.readoutScope
-        })
+        send(settingsCommand())
         send({ cmd: "snapshot" })
+    }
+
+    onSettingsChanged: {
+        if (proc.running)
+            send(settingsCommand())
     }
 
     Process {

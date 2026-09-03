@@ -11,7 +11,11 @@ SENTINEL_RE = re.compile(r"\n__AGENT_DESK__(.*?)__AGENT_DESK__\n", re.DOTALL)
 
 
 def real_binary(name: str, path: str) -> str | None:
-    """First unmarked executable regular file of `name` on path, or None."""
+    """First unmarked executable regular file of `name` on path, or None.
+
+    Symlinks are followed: stock installs and mise shims are links. The
+    target must be a regular file; the marker is read from the resolved file.
+    """
     for entry in path.split(":"):
         directory = entry if entry else "."
         candidate = os.path.join(directory, name)
@@ -19,7 +23,12 @@ def real_binary(name: str, path: str) -> str | None:
             st = os.lstat(candidate)
         except OSError:
             continue
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        if stat.S_ISLNK(st.st_mode):
+            try:
+                st = os.stat(candidate)
+            except OSError:
+                continue
+        if not stat.S_ISREG(st.st_mode):
             continue
         if not os.access(candidate, os.X_OK):
             continue
@@ -40,8 +49,9 @@ def parse_probe_output(text: str) -> list[str]:
 
 
 def probe_command(shell: str, home_envs: list[str]) -> list[str]:
-    variables = ["$PATH"] + [f"${name}" for name in home_envs]
-    fmt = r'printf "\n__AGENT_DESK__%s__AGENT_DESK__\n" ' + " ".join(variables)
+    names = ["PATH"] + list(home_envs)
+    quoted = " ".join(f'"${{{name}-}}"' for name in names)
+    fmt = r'printf "\n__AGENT_DESK__%s__AGENT_DESK__\n" ' + quoted
     return [shell, "-lic", fmt]
 
 
@@ -50,7 +60,7 @@ def fallback_path(runner_path: str, install_dirs: list[str], home: str) -> str:
     parts = [p for p in runner_path.split(":") if p]
     extras = [os.path.join(home, ".local", "bin")]
     for raw in install_dirs:
-        extras.append(os.path.expanduser(raw.replace("~", home, 1) if raw.startswith("~") else raw))
+        extras.append(raw.replace("~", home, 1) if raw.startswith("~") else raw)
     seen = set(parts)
     for extra in extras:
         if extra not in seen:

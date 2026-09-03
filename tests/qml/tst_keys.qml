@@ -68,5 +68,28 @@ Item {
             var action = Keys.textKey(Keys.createState(), "r", sampleSnapshot())
             compare(action.type, "refresh")
         }
+
+        function test_move_and_focus_return_fresh_state() {
+            var snap = sampleSnapshot()
+            var state = Keys.createState()
+            var focused = Keys.focusOnOpen(state, snap)
+            verify(focused !== state)
+            compare(state.cursorIndex, 0)
+            var moved = Keys.move(focused, 0, 1, snap)
+            verify(moved.state !== focused)
+            compare(focused.cursorIndex, 0)
+            compare(moved.state.cursorIndex, 1)
+        }
+
+        function test_cards_filter_only_no_sort() {
+            var snap = sampleSnapshot()
+            snap.state.accounts = [
+                { id: "bb" + "0".repeat(30), provider: "claude", kind: "isolated", name: "work", createdAt: "t2" },
+                { id: "aa" + "0".repeat(30), provider: "claude", kind: "imported", name: "personal", createdAt: "t1" }
+            ]
+            var list = Keys.cards(snap)
+            compare(list[0].accountId, "bb" + "0".repeat(30))
+            compare(list[1].accountId, "aa" + "0".repeat(30))
+        }
     }
 }

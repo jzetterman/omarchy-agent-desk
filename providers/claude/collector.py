@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,12 +17,13 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from agentdesk.clock import Clock, FakeClock
+from agentdesk.clock import Clock
 from agentdesk.descriptor import load_one
 from agentdesk.http import Http
 from agentdesk.record import normalize
 
-INSTALL_HINT = "Install Claude Code: `mise use -g claude@latest`"
+INSTALL_HINT = "Install Claude Code: mise use -g claude@latest"
+NETWORK_CAP_SEC = 10.0
 USAGE_HEADERS_EXTRA = {
     "anthropic-beta": "oauth-2025-04-20",
     "Accept": "application/json",
@@ -43,18 +46,28 @@ def plan_label(tier: str, subscription: str) -> str:
     return ""
 
 
-# Read a regular non-symlink JSON file, or None if missing/invalid.
+# Read a regular file as JSON without following a symlink (plan C.5).
 def read_json(path: Path) -> dict | None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NOCTTY | os.O_CLOEXEC
     try:
-        st = os.lstat(path)
+        fd = os.open(str(path), flags)
     except OSError:
         return None
-    import stat as statmod
-    if statmod.S_ISLNK(st.st_mode) or not statmod.S_ISREG(st.st_mode):
-        return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        chunks = []
+        while True:
+            piece = os.read(fd, 65536)
+            if not piece:
+                break
+            chunks.append(piece)
+    finally:
+        os.close(fd)
+    try:
+        return json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -120,8 +133,10 @@ def sniff_points(payload: dict) -> bool:
 
 def as_fraction(value, points: bool) -> float | None:
     n = parse_utilization(value)
-    if not (n >= 0):
+    if math.isnan(n):
         return None
+    if n < 0:
+        n = 0.0
     if points or n > 1:
         n = n / 100.0
     if n < 0:
@@ -268,7 +283,7 @@ def collect(mode, home, home_kind, home_env_set, binary, deadline, clock, http, 
     identity = load_identity(home_path, home_env_set, descriptor, entry)
     if entry is None:
         return base_record(
-            clock, "not-signed-in", "Run `claude auth login`",
+            clock, "not-signed-in", "Run claude auth login",
             identity=identity, mode=mode,
         )
     if mode == "identity":
@@ -281,7 +296,7 @@ def collect(mode, home, home_kind, home_env_set, binary, deadline, clock, http, 
     if expires_at_ms > 0 and expires_at_ms / 1000.0 <= clock.now():
         if home_kind == "default":
             return base_record(
-                clock, "expired", "Sign-in expired · run `claude auth login`",
+                clock, "expired", "Sign-in expired · run claude auth login",
                 statusReason="default-home", identity=identity, mode=mode,
             )
         return base_record(
@@ -289,9 +304,9 @@ def collect(mode, home, home_kind, home_env_set, binary, deadline, clock, http, 
             statusReason="deferred", identity=identity, mode=mode,
         )
     url = (descriptor.get("urls") or {}).get("usage")
-    timeout = 10.0
+    timeout = NETWORK_CAP_SEC
     if deadline is not None:
-        timeout = max(0.1, min(10.0, float(deadline) - clock.now()))
+        timeout = max(0.1, min(NETWORK_CAP_SEC, float(deadline) - clock.now()))
     result = http.get(
         url,
         headers={"Authorization": "Bearer " + str(entry.get("accessToken") or ""), **USAGE_HEADERS_EXTRA},
@@ -327,7 +342,16 @@ def build_clock(test: bool) -> Clock:
     if test:
         raw = os.environ.get("AGENT_DESK_NOW")
         if raw:
-            return FakeClock(now=float(raw), monotonic=float(raw))
+            fixed = float(raw)
+
+            class _FixedNow(Clock):
+                def now(self) -> float:
+                    return fixed
+
+                def monotonic(self) -> float:
+                    return fixed
+
+            return _FixedNow()
     return Clock()
 
 
@@ -361,7 +385,8 @@ def main(argv: list[str]) -> int:
         )
         sys.stdout.write(json.dumps(record, separators=(",", ":")) + "\n")
         return 0
-    except Exception:
+    except Exception as exc:
+        sys.stderr.write(f"collector: {exc.__class__.__name__}\n")
         return 2
 
 

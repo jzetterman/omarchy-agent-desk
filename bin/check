@@ -5,7 +5,8 @@ ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
 OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
 
-qml_files=(Panel.qml Service.qml AccountCard.qml WindowRail.qml)
+mapfile -t qml_files < <(find . -name '*.qml' -not -path './tests/qml/*' -print | sort)
+[[ ${#qml_files[@]} -gt 0 ]] || { echo "qmllint: no QML files" >&2; exit 1; }
 QMLLINT=""
 if [[ -x /usr/lib/qt6/bin/qmllint ]]; then
   QMLLINT=/usr/lib/qt6/bin/qmllint
@@ -44,7 +45,9 @@ if [[ -x /usr/lib/qt6/bin/qmltestrunner ]]; then
 elif command -v qmltestrunner >/dev/null 2>&1; then
   QMLTEST="$(command -v qmltestrunner)"
 fi
-if [[ -n $QMLTEST ]]; then
-  "$QMLTEST" -platform offscreen -input tests/qml
+if [[ -z $QMLTEST ]]; then
+  echo "qmltestrunner: not found" >&2
+  exit 1
 fi
+"$QMLTEST" -platform offscreen -input tests/qml
 bash tests/test_qml_plaintext.sh

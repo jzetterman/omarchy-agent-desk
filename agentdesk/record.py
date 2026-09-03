@@ -210,4 +210,4 @@ def normalize(raw: dict | None) -> dict:
         out["sharedHealth"] = src["sharedHealth"]
     if src.get("sameAccountAs") is not None:
         out["sameAccountAs"] = src["sameAccountAs"]
-    return out
+    return {k: out[k] for k in RECORD_FIELDS if k in out}
