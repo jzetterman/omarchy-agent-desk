@@ -147,7 +147,7 @@ Events: `snapshot{state (each account also carries a derived `homePath`: `paths.
 One path rule, shared by `paths.py` and the shim: `$HOME/.config/omarchy/agent-desk/` and `$HOME/.local/state/omarchy/agent-desk/`, literal as spec §9.1 pins them; `XDG_CONFIG_HOME`/`XDG_STATE_HOME` are deliberately ignored so the runner (launched by the shell) and a terminal shim can never disagree (`test_routing.py` runs the shim with `XDG_CONFIG_HOME` set to a decoy and asserts it reads the pinned file).
 `~/.config/omarchy/agent-desk/` 0700: `state.json`, `homes/<provider>/<uuid>/` 0700, quarantine `homes/<provider>/<uuid>.quarantined-<UTC yyyymmddThhmmssZ>/` (timestamp from `Clock`, as is the `.diverged.<UTC>` suffix of E.4). `~/.local/state/omarchy/agent-desk/` 0700: `records/<provider>/<uuid>.json` 0600 (removed with the account, R11), `runner.log` 0600 (truncated at runner start when above 1 MB). `~/.config/omarchy/agent-desk/runner.lock` 0600: flock held by the live runner for its whole life (E.1a). Per-home lock: `<isolated home>/.agent-desk.lock` (flock, 0600) — isolated homes only; the imported default home never gets a lock or any other Agent Desk file (A4): reads there are `O_NOFOLLOW` and create nothing, and no transaction ever targets it (E.5 aborts on an imported match). Login pid file: `<staging>/.agent-desk-login.json` `{pid, starttime}` (unlinked by the handler that publishes the new account, and gone with the tree on discard). No process ids are persisted anywhere else (R6).
 
-### C.6 Settings (R27) — read in QML with `setting(name, fallback)`, validated by `Panel.qml::validatedSettings()`; every key except `readout` is forwarded to the runner in the `settings` command (C.4)
+### C.6 Settings (R27) — read in QML with `setting(name, fallback)`, validated by `Panel.qml::validatedSettings() (unknown and unlisted provider ids are resolved by the runner, which owns provider order)`; every key except `readout` is forwarded to the runner in the `settings` command (C.4)
 | key | default | validation |
 |---|---|---|
 | `refreshIntervalSec` | 900 | `Number()`, non-finite → 900, `< 60` → 60 |
@@ -408,4 +408,5 @@ Done when: A5 and A12a pass, M4 passes, README routing section merged.
 | diff (Phase 1) | claude-review | 2 (delta, 6 lenses) | 1 regression / 6 should-fix / ~15 nit | all (fix round 2, grok-4.6) | 0 open |
 | diff (Phase 1) | claude-review | 3 (delta, 1 reviewer) | 1 low / 3 nit | all (orchestrator) | 0 open — stage closed 2026-09-03 |
 | diff (Phase 1) | grok-review | 1 (unsandboxed, throwaway clone; John-approved) | 3 (2 P2, 1 P3) | all (fix round 3) | 0 open — round 2 could not run: Grok Build balance exhausted (402) 2026-09-03 |
-| diff (Phase 1) | codex-review (Fable substitute) | 1 | pending | | |
+| diff (Phase 1) | codex-review (Fable substitute) | 1 (full) | 4 P2 / 7 P3 | all (fix round 4, Fable) | 0 open |
+| diff (Phase 1) | codex-review (Fable substitute) | 2 (delta) | 0 (1 doc nit) | doc nit applied | 0 open — diff gate closed 2026-09-03; mergeable as Phase 1 |
