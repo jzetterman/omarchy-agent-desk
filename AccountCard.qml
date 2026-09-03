@@ -129,7 +129,9 @@ CursorSurface {
             readonly property string metaText: {
                 var ident = root.record && root.record.identity ? root.record.identity : null
                 if (!ident) return ""
-                if (ident.email) return String(ident.email)
+                var name = String((root.account && root.account.name) || "")
+                // R21: email only when it differs from the name; else org; else nothing.
+                if (ident.email && String(ident.email) !== name) return String(ident.email)
                 if (ident.org) return String(ident.org)
                 return ""
             }

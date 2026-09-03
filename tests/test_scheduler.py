@@ -553,6 +553,24 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(accounts[0]["kind"], "imported")
             runner.shutdown_workers()
 
+    def test_imported_account_is_named_by_email_in_snapshot(self):
+        # R21: the import placeholder name "default" is shown as the email once
+        # identity is known; an explicit name is never overridden.
+        with fixture_home("signed-in") as home:
+            plugin = write_plugin(home, OK_COLLECTOR)
+            runner = make_runner(plugin, probe_timeout_sec=2.0)
+            self.assertEqual(runner.start(), 0)
+            self._wait_probe(runner)
+            acct = [a for a in runner.state["accounts"] if a.get("provider") == "claude"][0]
+            self.assertEqual(acct["name"], "default")
+            runner.records[acct["id"]] = {"identity": {"email": "me@example.com", "org": "Org"}}
+            shown = [a for a in runner.snapshot_event()["state"]["accounts"] if a["id"] == acct["id"]][0]
+            self.assertEqual(shown["name"], "me@example.com")
+            acct["name"] = "work"
+            shown = [a for a in runner.snapshot_event()["state"]["accounts"] if a["id"] == acct["id"]][0]
+            self.assertEqual(shown["name"], "work")
+            runner.shutdown_workers()
+
     def test_probe_single_flight(self):
         with fixture_home("signed-in") as home:
             hang = home / "hang_shell"

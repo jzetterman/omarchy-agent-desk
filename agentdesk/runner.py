@@ -945,6 +945,13 @@ class Runner:
                     item["homePath"] = ""
             else:
                 item["homePath"] = acct.get("home")
+            # R21: an imported account still carrying the import placeholder
+            # name is shown by its email once identity is known.
+            if acct.get("kind") == "imported" and acct.get("name") == "default":
+                rec = self.records.get(acct["id"]) or {}
+                email = str(((rec.get("identity") or {}).get("email")) or "")
+                if email:
+                    item["name"] = email
             accounts_out.append(item)
         records_out = {}
         for aid, rec in self.records.items():
